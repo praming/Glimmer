@@ -1,9 +1,23 @@
 name: glimmer
 
-# 镜像名可通过环境变量定制，便于推送到 Docker Hub：
-#   IMAGE_PREFIX=你的dockerhub用户名/   IMAGE_TAG=1.0.0
-# 不设置时即 glimmer-api:latest / glimmer-web:latest（纯本地使用）。
-# 用法见 README「Docker 部署 → 推送到 Docker Hub」。
+# ============================================================================
+# 默认部署：两个容器、一个端口、不需要额外的反向代理
+# ============================================================================
+#   glimmer-api   Hono API + SQLite + sharp。只在容器内网可达，不对外暴露端口。
+#   glimmer-web   Nuxt/Nitro 前端。对外提供页面，并把 /api 与 /files 转发给 API
+#                 （实现在 apps/web/server/middleware/api-proxy.ts）。
+#
+#   启动后直接访问 `http://<服务器地址>:${WEB_PORT:-3001}` 即可，无需装 Nginx。
+#
+#   ── 需要 Nginx 时（TLS 证书 / 图片由 Nginx 直出 / 想用 80·443 端口）──
+#     docker compose --profile nginx up -d
+#   nginx 服务带 profiles 标记，**默认不会被启动，也不会被 pull**。
+#
+#   ── 已经装了 1Panel / 宝塔面板 ──
+#     用 docker-compose.1panel.yml（端口只绑回环，交给面板反代）。
+#
+#   镜像名可用 IMAGE_PREFIX / IMAGE_TAG 定制（见 README「部署」章节）。
+# ============================================================================
 
 services:
   glimmer-api:
@@ -20,8 +34,10 @@ services:
       - DATABASE_URL=/data/glimmer/glimmer.db
       - LOCAL_STORAGE_DIR=/data/glimmer/uploads
       - TEMP_DIR=/data/glimmer/tmp
-      # API 只在 glimmer-net 内网可达，外部请求头由 Nginx 覆写 → 可安全信任 XFF
-      - TRUST_PROXY=true
+      # 请求头由 glimmer-web（或前面的 Nginx）覆写，登录限流据此取真实客户端 IP。
+      # ⚠️ 前提是本服务**不**直接暴露到公网（下面用的是 expose 而非 ports，已满足）。
+      #    若你改成 ports 直连，请把 TRUST_PROXY 改为 false，否则伪造 XFF 即可绕过 IP 限流。
+      - TRUST_PROXY=${TRUST_PROXY:-true}
     volumes:
       - ./glimmer-data:/data/glimmer
     expose:
@@ -49,25 +65,40 @@ services:
       - NUXT_PUBLIC_API_BASE=/api
       - NITRO_HOST=0.0.0.0
       - NITRO_PORT=3001
-    expose:
-      - '3001'
+      # 生产环境下由本容器代理 /api 与 /files。容器名固定为 glimmer-api，
+      # 这里也用服务名寻址，两者一致；若改了容器名请同步修改本项。
+      - API_PROXY_TARGET=http://glimmer-api:3000
+    ports:
+      # 唯一对外端口。想直接占 80 端口就在 .env 里写 WEB_PORT=80
+      - '${WEB_PORT:-3001}:3001'
     depends_on:
       - glimmer-api
     restart: unless-stopped
     networks:
       - glimmer-net
 
+  # ---------------------------------------------------------------------------
+  # 可选：Nginx（默认不启动）
+  # ---------------------------------------------------------------------------
+  # 启用：docker compose --profile nginx up -d
+  #
+  # 它负责三件事，只有第三件是 glimmer-web 做不到的：
+  #   1) 监听 80 / 443 与 TLS 终结        —— 面板或 Cloudflare 也能干
+  #   2) /api、/ 的分流                    —— glimmer-web 已内置，不需要
+  #   3) /files 用 alias 由 Nginx 直接返回磁盘文件，不消耗 Node 进程
+  #
+  # ⚠️ 代价：图片不经过 API，**访问统计会缺失**（见 README「访问统计的覆盖范围」）。
+  # 需要仓库根目录的 nginx.conf（它按 glimmer-api / glimmer-web 服务名寻址）。
   glimmer-nginx:
+    profiles: ['nginx']
     image: nginx:alpine
     container_name: glimmer-nginx
     ports:
-      - '80:80'
-      - '443:443'
+      - '${HTTP_PORT:-80}:80'
+      - '${HTTPS_PORT:-443}:443'
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
-      # 本地上传目录直接由 Nginx 提供静态服务（可选，命中时无需回源 API）
       - ./glimmer-data/uploads:/var/www/glimmer/uploads:ro
-      # HTTPS 证书目录（启用 443 时挂载）
       - ./certs:/etc/nginx/certs:ro
     depends_on:
       - glimmer-api

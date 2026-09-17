@@ -1,40 +1,45 @@
 name: glimmer
 
 # ============================================================================
-# 面板反代场景（1Panel / 宝塔 / 已有宿主机 Nginx）的部署编排
+# 面板反代场景（1Panel / 宝塔 / 宿主机已有 Nginx）的部署编排
 # ============================================================================
-# 与 docker-compose.yml 的唯一区别：**不含 glimmer-nginx**。
-# 面板自带的 OpenResty 接管 80/443、TLS 与 location 分流，本文件只起 api + web，
-# 端口一律绑定回环地址，仅供宿主机上的反向代理访问。
+# 与 docker-compose.yml 的唯一区别：**端口只绑定回环地址**，不直接对外，
+# 全部流量由面板自带的 OpenResty 转发进来。
 #
 # 用法（与 docker-compose.yml 二选一，不要同时跑）：
 #   docker compose -f docker-compose.1panel.yml up -d --build
-#   docker compose -f docker-compose.1panel.yml logs -f glimmer-api
+#   docker compose -f docker-compose.1panel.yml logs -f glimmer-web
 #
-# 两者共用项目名 `glimmer` 与容器名，切换时 compose 会自动移除多出来的
-# glimmer-nginx 容器；数据都在宿主机的 ./glimmer-data，不会丢。
+# 两者共用项目名 `glimmer` 与容器名，切换时 compose 会自动移除多出来的容器；
+# 数据都在宿主机的 ./glimmer-data，不会丢。
 #
 # ---------------------------------------------------------------------------
-# 面板侧配置（缺一不可，否则上传/登录/图片全部 404）
+# 面板侧配置
 # ---------------------------------------------------------------------------
-# 1) 反向代理规则至少两条：
-#      路径 /      → http://127.0.0.1:3001    前端（Nitro node-server）
-#      路径 /api   → http://127.0.0.1:3000    API
-#      路径 /files → http://127.0.0.1:3000    图片直链
+# 【最少配置】只需要一条反向代理规则：
+#      路径 /  →  http://127.0.0.1:3001
+#   因为 glimmer-web 自己会把 /api 与 /files 转发给 API（自带代理），
+#   所以面板不必再为这两个路径单独写 location。
 #
-#    ⚠️ 若面板只允许一条规则，请把 / 指到 3001 后，在该站点的配置文件里
-#       手工补上 /api 与 /files 两个 location —— 少了它们前端能打开但接口全 404，
-#       图片也会全部挂掉（前端是 SPA，不带同源代理就找不到后端）。
+# 【推荐配置】多写两条可以少一跳、也便于分别限速：
+#      路径 /      →  http://127.0.0.1:3001   前端
+#      路径 /api   →  http://127.0.0.1:3000   API
+#      路径 /files →  http://127.0.0.1:3000   图片直链（走 API 时访问统计才完整）
 #
-# 2) 调大上传体积上限。1Panel 的 OpenResty 默认 client_max_body_size 是 1m，
-#    而本项目允许 20MB。在 http 段或该 server 段内加：
-#        client_max_body_size 64m;
-#    否则超过 1MB 的上传会被面板层直接拦成 413（API 根本收不到请求）。
+# 【务必调大上传体积】面板的 OpenResty 默认 client_max_body_size 是 1m，
+#   而本项目允许 20MB。在 http 段或该 server 段内加：
+#       client_max_body_size 64m;
+#   否则超过 1MB 的上传会被面板层直接拦成 413（API 根本收不到请求，容器日志里
+#   什么都看不到，很容易误判成后端 bug）。
 #
-# 3) 上传是慢请求，建议把 /api 的超时放宽，与自带 nginx.conf 保持一致：
-#        proxy_read_timeout 300s;
-#        proxy_send_timeout 300s;
-#        proxy_request_buffering off;
+# 【建议放宽上传超时】
+#       proxy_read_timeout 300s;
+#       proxy_send_timeout 300s;
+#       proxy_request_buffering off;
+#
+# ⚠️ 不要用「静态网站」功能托管 glimmer-web：它是 Nitro node-server 产物，
+#    .output/public/ 里只有 _nuxt/ 与 favicon.svg，**没有 index.html**
+#    （HTML 入口由 Nitro 运行时生成），必须当普通反代站点使用。
 # ============================================================================
 
 services:
@@ -56,7 +61,7 @@ services:
       # ⚠️ 前提是下面的端口只绑 127.0.0.1：一旦改成 0.0.0.0 并放行到公网，
       #    直连者就能伪造 X-Forwarded-For 拆散 IP 维度计数、绕过登录限流，
       #    那种部署必须把本项改为 false。
-      - TRUST_PROXY=true
+      - TRUST_PROXY=${TRUST_PROXY:-true}
     volumes:
       - ./glimmer-data:/data/glimmer
     # 注意是 ports 而非 expose：面板的 OpenResty 在宿主机上（或独立网络），
@@ -86,6 +91,7 @@ services:
       - NUXT_PUBLIC_API_BASE=/api
       - NITRO_HOST=0.0.0.0
       - NITRO_PORT=3001
+      - API_PROXY_TARGET=http://glimmer-api:3000
     ports:
       - '127.0.0.1:${WEB_HOST_PORT:-3001}:3001'
     depends_on:

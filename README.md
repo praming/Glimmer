@@ -12,7 +12,8 @@
 
 - [特性](#特性)
 - [技术栈](#技术栈)
-- [快速开始](#快速开始)
+- [部署](#部署)
+- [开发与自建镜像](#开发与自建镜像)
 - [配置](#配置)
 - [部署要点](#部署要点)
 - [API](#api)
@@ -72,71 +73,255 @@
 | 异步队列 | p-queue（进程内，无 Redis）                      |
 | 认证     | Cookie 会话（httpOnly）+ Argon2id + Bearer 令牌   |
 | 参数校验 | Zod                                             |
-| 部署     | Docker Compose + Nginx，或纯 Node 进程           |
+| 部署     | Docker Compose（两个容器，可选 Nginx），或纯 Node 进程 |
 
 包名：`@glimmer/api` / `@glimmer/web` / `@glimmer/shared`（pnpm workspace monorepo）。
 
 ---
 
-## 快速开始
+## 部署
 
-### 方式一：Docker Compose（推荐）
+> 这一节是写给「只想把它跑起来」的使用者的，每一步都可以直接复制执行，不需要 Docker 基础。
+> 想二次开发请跳到 [本地开发](#本地开发)。
+
+### 0. 准备一台机器
+
+VPS、NAS、迷你主机、家里的旧电脑都行，**1 核 1G 内存起步就够** —— 这个项目平时几乎不占资源，
+只在处理图片时吃一点 CPU。
+
+先确认是否已装 Docker：
+
+```bash
+docker version           # 有 Client 和 Server 两段输出才算装好
+docker compose version   # 需要 v2.x，Docker 官方安装包自带
+```
+
+两条命令任意一条报 `command not found`，就执行官方安装脚本：
+
+```bash
+curl -fsSL https://get.docker.com | sh
+```
+
+> **NAS 用户**：群晖在「套件中心」装 **Container Manager**，威联通装 **Container Station**，
+> Unraid / 极空间 / 绿联等一般已内置。它们都带 Docker Compose，下面的命令在 NAS 的「终端」或 SSH 里执行
+> （也可以把 `docker-compose.yml` 内容粘贴进面板的「编排 / Compose」界面）。
+
+### 1. 下载部署文件
+
+一共只需要两个文件：`docker-compose.yml`（告诉 Docker 怎么跑）和 `.env`（你的配置）。
+
+**有 git：**
 
 ```bash
 git clone https://github.com/praming/Glimmer.git
 cd Glimmer
+```
+
+**没有 git** —— 直接下这两个文件就行，不必克隆整个仓库：
+
+```bash
+mkdir glimmer && cd glimmer
+curl -fsSLO https://raw.githubusercontent.com/praming/Glimmer/main/docker-compose.yml
+curl -fsSL  https://raw.githubusercontent.com/praming/Glimmer/main/.env.example -o .env.example
+```
+
+### 2. 配置（**这一步别跳过**）
+
+```bash
 cp .env.example .env
-# 编辑 .env：至少修改 SESSION_SECRET / ENCRYPTION_KEY / ADMIN_PASSWORD / PUBLIC_BASE_URL
-docker compose up -d --build
-docker compose logs -f glimmer-api
 ```
 
-启动后访问 `http://<你的服务器IP>/`，用 `.env` 里的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录。
-
-| 服务            | 说明                                              | 端口        |
-| --------------- | ------------------------------------------------- | ----------- |
-| `glimmer-api`   | Hono API + sharp + p-queue，含 `/files/*` 静态兜底  | 3000（内网） |
-| `glimmer-web`   | Nuxt 3（Nitro node-server）                        | 3001（内网） |
-| `glimmer-nginx` | 反向代理：`/api/*` → API，其余 → Web（**可选**）      | 80 / 443    |
-
-> **已经用 1Panel / 宝塔等面板反代？** 那 `glimmer-nginx` 就是重复的一层，可以去掉 ——
-> 改用 `docker compose -f docker-compose.1panel.yml up -d --build`，详见
-> [反向代理与 HTTPS](#反向代理与-https) 的「形态 B」。
-
-> **本地部署不需要 Docker Hub 账号**：`docker compose up -d --build` 是在**本机构建镜像**，只打本地 tag，不会推送或拉取任何仓库。
->
-> 首次构建会在容器内编译 `better-sqlite3`，视机器性能约 3–8 分钟；之后命中层缓存会快很多。
->
-> 更新版本：`git pull && docker compose up -d --build`。
-
-#### 免构建：直接拉取 Docker Hub 上的镜像
-
-不想在服务器上编译（首次构建要装 C++ 工具链、约需 3–8 分钟）时，可以用已发布好的镜像。
-每次打 `v*` 标签、或向 `main` 推送构建相关改动时，GitHub Actions 会自动构建并推送到 Docker Hub
-（见 [发布镜像到 Docker Hub](#发布镜像到-docker-hub维护者)）。
-
-在 `.env` 里指定镜像来源（这两项就是给 compose 做变量替换的）：
+**第一步，生成两个随机密钥。** 不换的话，任何人都能用公开的默认值伪造登录状态：
 
 ```bash
-IMAGE_PREFIX=你的DockerHub用户名/
-IMAGE_TAG=1.0.0        # 或 latest
+sed -i "s|^SESSION_SECRET=.*|SESSION_SECRET=$(openssl rand -hex 32)|; \
+        s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$(openssl rand -hex 32)|" .env
 ```
 
-然后拉取并启动 —— `--no-build` 保证不会触发本地构建：
+> macOS 上 `sed` 要写成 `sed -i '' "..."` 的形式。
+> 没有 `openssl` 也无妨：随便找个在线随机字符串生成器，生成两串 **32 位以上**的随机字符，
+> 手工填到 `SESSION_SECRET=` 和 `ENCRYPTION_KEY=` 后面。
+
+**第二步，打开 `.env` 改这四项**（`vi .env` / `nano .env`，下载到本地用记事本改也一样）：
+
+| 变量              | 改成                       | 不改会怎样                                          |
+| ----------------- | -------------------------- | --------------------------------------------------- |
+| `ADMIN_PASSWORD`  | 你自己的登录密码            | 默认是 `change-me`，等于没设密码                     |
+| `PUBLIC_BASE_URL` | `http://你的服务器IP:3001`  | 复制出去的图片直链**别人打不开**                     |
+| `COOKIE_SECURE`   | 用 `http://` 访问就填 `false` | **密码明明对，却一直登录不上**（登录 Cookie 被浏览器丢弃） |
+| `WEB_PORT`        | 想直接 `http://IP` 访问就填 `80` | 默认 3001，网址要带端口号                       |
+
+其他变量保持默认即可，跑通之后再按需调整（完整清单见 [配置](#配置)）。
+
+### 3. 启动
 
 ```bash
-git clone https://github.com/praming/Glimmer.git   # 只为取 compose 文件与 nginx.conf
-cd Glimmer
-cp .env.example .env    # 仍需修改 SESSION_SECRET / ENCRYPTION_KEY / ADMIN_PASSWORD / PUBLIC_BASE_URL
-docker compose pull
-docker compose up -d --no-build
+docker compose up -d
 ```
 
-> 涉及两个镜像：`glimmer-api` 与 `glimmer-web`，**版本号必须一致**，不要混用不同版本。
->
-> `IMAGE_PREFIX` 结尾的 `/` 不能省；留空则回到「本地构建」模式。
+就这一条。看到 `Started` 就成功了。
 
-### 方式二：本地开发
+> 若提示 `pull access denied`、`manifest unknown` 或一直卡在拉取（镜像可能尚未发布，
+> 或 Docker Hub 仓库是私有的），改用**从源码构建**，效果完全一样，只是首次要多等几分钟：
+>
+> ```bash
+> docker compose up -d --build
+> ```
+>
+> 首次构建会在容器内编译原生模块，视机器性能约 **3–10 分钟**（NAS 上更久），期间没有任何输出是正常的。
+
+看看跑起来没有：
+
+```bash
+docker compose ps        # glimmer-api 与 glimmer-web 都应是 running（api 显示 healthy 更好）
+docker compose logs -f   # 跟踪日志；按 Ctrl+C 退出，不会停服务
+```
+
+### 4. 打开浏览器
+
+访问 `http://你的服务器IP:3001`（若把 `WEB_PORT` 改成了 `80`，直接访问 `http://你的服务器IP`），
+用 `.env` 里的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录。
+
+登进去后建议顺手做三件事：
+
+1. 到**「个人资料」把密码改掉** —— `ADMIN_PASSWORD` 只在**首次初始化**时生效，之后改 `.env` 不会同步；
+2. 到**「设置 → 存储后端」**确认默认的本地存储可用；需要接 S3 / WebDAV 也在这里配；
+3. 到**「设置 → 命名与域名」**把直链域名核成你的实际地址（它决定复制出来的图片链接长什么样）。
+
+### 这两个容器分别在做什么
+
+| 容器          | 作用                                        | 端口                              |
+| ------------- | ------------------------------------------- | --------------------------------- |
+| `glimmer-api` | 后端：登录、上传、图片处理、SQLite 数据库     | 3000，**仅容器内网**，不对公网开放  |
+| `glimmer-web` | 前端页面；同时把 `/api` 与 `/files` 转发给后端 | 3001，**唯一对外端口**             |
+
+关键在第二行：`glimmer-web` **自带同源转发**
+（实现见 [`apps/web/server/middleware/api-proxy.ts`](apps/web/server/middleware/api-proxy.ts)），
+所以**不需要额外装 Nginx** —— 你只暴露一个端口，登录、上传、图片直链就全通了。
+这是本项目与「一个应用 + 一个反代」常见组合最大的不同。
+
+---
+
+### 可选：加上 Nginx（80 / 443 与 HTTPS）
+
+只有这三种情况才需要它：
+
+- 想让服务监听到标准的 **80 / 443** 端口；
+- 想用**自己的域名 + HTTPS 证书**；
+- 想让图片由 Nginx 直接读磁盘返回，不走 Node 进程（有性能意义，但对小团队基本无感）。
+
+```bash
+docker compose --profile nginx up -d
+```
+
+`glimmer-nginx` 带 **profile** 标记，所以：
+
+- 不加 `--profile nginx` 时它**既不会启动、也不会被拉取**，等于不存在；
+- 加了才启动，且**一条命令随时可加可去**：
+
+```bash
+docker compose --profile nginx up -d     # 加上 Nginx
+docker compose up -d                     # 去掉 Nginx（compose 会移除多余容器，数据不动）
+```
+
+> ⚠️ **代价**：图片改为由 Nginx 直接返回后就不再经过 API，**访问统计会缺失**
+> （详见 [访问统计的覆盖范围](#-访问统计的覆盖范围重要)）。默认的两个容器形态统计才是完整的。
+>
+> 它需要仓库根目录的 `nginx.conf`；用 `curl` 方式下载的话请补一句：
+> `curl -fsSLO https://raw.githubusercontent.com/praming/Glimmer/main/nginx.conf`
+
+**启用 HTTPS：** 把证书放到 `./certs/fullchain.pem` 与 `./certs/privkey.pem`，
+取消 `nginx.conf` 末尾 443 段的注释，并把 `.env` 里的 `COOKIE_SECURE` 改回 `true`。
+
+### 可选：不用 Compose，用 `docker run`
+
+只用两条命令，适合不想引入 compose 的场景。**容器名请保持 `glimmer-api` / `glimmer-web`**
+（前端按这个名字找后端；改了就要同步改 `API_PROXY_TARGET`）。
+
+```bash
+docker network create glimmer-net
+mkdir -p glimmer-data/uploads glimmer-data/tmp
+```
+
+```bash
+docker run -d --name glimmer-api --network glimmer-net --restart unless-stopped \
+  -v "$PWD/glimmer-data:/data/glimmer" \
+  -e NODE_ENV=production -e PORT=3000 -e TRUST_PROXY=true \
+  -e DATABASE_URL=/data/glimmer/glimmer.db \
+  -e LOCAL_STORAGE_DIR=/data/glimmer/uploads \
+  -e TEMP_DIR=/data/glimmer/tmp \
+  -e SESSION_SECRET=换成随机串 -e ENCRYPTION_KEY=换成随机串 \
+  -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=换成你的密码 \
+  -e PUBLIC_BASE_URL=http://你的IP:3001 -e COOKIE_SECURE=false \
+  praming/glimmer-api:latest
+```
+
+```bash
+docker run -d --name glimmer-web --network glimmer-net --restart unless-stopped \
+  -p 3001:3001 \
+  -e NODE_ENV=production -e NITRO_HOST=0.0.0.0 -e NITRO_PORT=3001 \
+  -e NUXT_PUBLIC_API_BASE=/api \
+  -e API_PROXY_TARGET=http://glimmer-api:3000 \
+  praming/glimmer-web:latest
+```
+
+然后访问 `http://你的IP:3001`。
+
+> `glimmer-api` 特意**没有** `-p`：它只在容器内网可达，公网无法直连 —— 这既是安全设计，
+> 也是登录限流能正确识别访客 IP 的前提。所以跑 `docker run` 时请**不要**给它加 `-p 3000:3000`。
+>
+> 想换成自己构建的镜像，把 `praming/` 前缀去掉（本地构建的 tag 就叫 `glimmer-api:latest`）。
+
+### 可选：已经有 1Panel / 宝塔面板
+
+面板自带的 OpenResty 可以接管对外端口，这时用另一份编排（端口只绑 `127.0.0.1`，不直接对外）：
+
+```bash
+docker compose -f docker-compose.1panel.yml up -d
+```
+
+面板侧只需两步：
+
+1. 新建一个**反向代理**站点，目标填 `http://127.0.0.1:3001` —— **一条规则就够**，
+   因为前端自己会把 `/api` 与 `/files` 转给后端；
+2. 在该站点配置里把上传体积上限调大：
+
+   ```nginx
+   client_max_body_size 64m;
+   ```
+
+   ⚠️ 面板默认是 **1m**，不改的话**超过 1MB 的图会被面板直接拦成 413**，
+   而且容器日志里什么都看不到，很容易误判成后端故障。
+
+> 反向代理请勿使用面板的「静态网站」功能托管前端 —— 它的产物不是纯静态站点（见下方说明）。
+
+### 升级、备份与卸载
+
+**升级到新版本：**
+
+```bash
+docker compose pull && docker compose up -d --no-build    # 用镜像升级
+docker compose up -d --build                              # 从源码升级
+```
+
+**备份** —— 全部运行数据都在 `./glimmer-data`，打包它即可，不需要停服务：
+
+```bash
+tar czf glimmer-backup-$(date +%F).tar.gz glimmer-data
+```
+
+**卸载**（下面的命令会**删除全部图片与数据库**，请先备份）：
+
+```bash
+docker compose down
+rm -rf glimmer-data
+```
+
+---
+
+## 开发与自建镜像
+
+### 本地开发
 
 > ⚠️ **Node 版本必须是 18 / 20 / 22 / 23（推荐 22）**
 >
@@ -161,7 +346,7 @@ pnpm dev                # 同时启动 API(3000) 与 Web(3001)
 
 也可以分开启动：`pnpm dev:api`（端口 3000）、`pnpm dev:web`（端口 3001）。
 
-### 方式三：生产构建（不使用 Docker）
+### 生产构建（不使用 Docker）
 
 ```bash
 pnpm build                          # shared → api → web
@@ -169,119 +354,17 @@ pnpm start:api                      # node apps/api/dist/index.js
 pnpm --filter @glimmer/web start    # node apps/web/.output/server/index.mjs
 ```
 
-> 这种方式下前端能加载，但**接口会 404** —— 生产环境依赖反向代理（自带 Nginx 或面板反代）同源代理 `/api` 与 `/files`。
-> 想在不装 Nginx 的情况下预览生产产物，用：
+生产产物下 `/api` 与 `/files` 由 **Nuxt（Nitro）自身转发**给 API，与 Docker 里的形态一致。
+容器部署时通过 `API_PROXY_TARGET` 指定后端地址（默认 `http://glimmer-api:3000`，纯本机运行可设为
+`http://127.0.0.1:3000`）：
 
 ```bash
-pnpm start:api    # 终端 A：API :3000
-pnpm preview      # 终端 B：nitro :3100 + 同源代理 :4000
+API_PROXY_TARGET=http://127.0.0.1:3000 pnpm --filter @glimmer/web start
 ```
 
-`pnpm preview` 会自行拉起 nitro 并探测两个上游是否就绪，任一不可达时接口返回带原因的 `502`，不会静默失败。
-端口可用 `PREVIEW_PORT` / `NITRO_PORT` / `API_PORT` 覆盖。
-
----
-
-## 配置
-
-所有配置都通过环境变量，完整清单与注释见 [`.env.example`](.env.example)。关键项：
-
-| 变量                              | 默认                      | 说明                                                                 |
-| --------------------------------- | ------------------------- | -------------------------------------------------------------------- |
-| `DATABASE_URL`                    | `./data/glimmer.db`       | SQLite 文件路径（容器内建议 `/data/glimmer/glimmer.db`）               |
-| `LOCAL_STORAGE_DIR`               | `./data/uploads`          | 本地存储后端根目录                                                     |
-| `TEMP_DIR`                        | `./data/tmp`              | 上传临时目录（处理完成后自动清理）                                      |
-| `SESSION_SECRET`                  | —                         | 会话签名/派生密钥，**≥ 32 字符，务必修改**                              |
-| `ENCRYPTION_KEY`                  | —                         | 敏感配置加密主密钥（AES-256-GCM），**≥ 32 字符，务必修改**               |
-| `ADMIN_USERNAME`                  | `admin`                   | 首次启动创建的管理员用户名                                              |
-| `ADMIN_PASSWORD`                  | `change-me`               | 首次启动创建的管理员密码，**务必修改**                                  |
-| `SESSION_TTL_DAYS`                | `7`                       | 默认会话有效期（天）；用户可在个人资料里单独覆盖                          |
-| `COOKIE_SECURE`                   | 生产为 `true`             | 仅 HTTPS 下为 `true`；纯 HTTP 访问（如 `http://1.2.3.4`）必须设为 `false` |
-| `PUBLIC_BASE_URL`                 | `http://localhost:3000`   | 对外基地址，也是本地后端直链域名的默认值                                 |
-| `TRUST_PROXY`                     | 生产为 `true`             | 是否信任反代传来的 `X-Forwarded-For`。**API 端口直连公网时必须设为 `false`** |
-| `MAX_UPLOAD_SIZE_MB`              | `20`                      | 单文件大小上限                                                          |
-| `QUEUE_CONCURRENCY`               | `2`                       | 异步队列并发数                                                          |
-| `CORS_ORIGIN`                     | `http://localhost:3001`   | 允许的跨域来源，逗号分隔                                                 |
-| `AUTH_RATE_LIMIT_MAX_PER_IP`      | `20`                      | 单个 IP 在窗口内的登录失败上限                                           |
-| `AUTH_RATE_LIMIT_MAX_PER_ACCOUNT` | `5`                       | 单个账号在窗口内的登录失败上限                                           |
-| `AUTH_RATE_LIMIT_WINDOW_SECONDS`  | `900`                     | 限流窗口长度（秒）                                                       |
-
-> ⚠️ **`ADMIN_PASSWORD` 只在 `users` 表为空时生效**。若账号已存在，改 `.env` 不会更新密码 ——
-> 请登录后到**个人资料**页修改，或删除数据库重新初始化（会清空所有数据）。
->
-> 启动时若检测到弱密钥或默认管理员密码，日志中会输出安全提示。
->
-> ⚠️ 计流数据存在**进程内存**中，因此**登录限流是单实例的**：进程重启即清零（这同时也是「把自己锁在门外」的逃生口），
-> 若将来横向扩成多实例，额度会被实例数放大，那时需要换成 Redis 之类的共享存储。
-
----
-
-## 部署要点
-
-### 反向代理与 HTTPS
-
-#### 形态 A：使用仓库自带 Nginx（默认）
-
-`docker-compose.yml` 会额外起一个 `glimmer-nginx` 容器，已完成：
-
-- `/` → `glimmer-web`，`/api/*` → `glimmer-api`；
-- `location /files/` 直接 `alias` 到数据目录下的 `uploads`，本地存储后端的图片由 **Nginx 直接返回**，不消耗 Node 进程；未命中时回源 API。
-
-启用 HTTPS：把证书放到 `./certs/`，取消 `nginx.conf` 底部 443 server 块的注释，并把 `COOKIE_SECURE` 设为 `true`。
-
-#### 形态 B：交给面板反代 —— 不需要 `glimmer-nginx`
-
-如果宿主机上已经跑着 **1Panel / 宝塔** 这类面板（自带 OpenResty），那么 `glimmer-nginx` 是重复的一层，可以直接去掉。仓库提供了对应的编排文件：
-
-```bash
-docker compose -f docker-compose.1panel.yml up -d --build
-```
-
-它只起 `glimmer-api` 与 `glimmer-web`，两者端口绑定在 `127.0.0.1`，由面板对外提供 80/443。面板侧需要配置三处：
-
-| 项目       | 配置                                                                       |
-| ---------- | -------------------------------------------------------------------------- |
-| 代理规则   | `/` → `127.0.0.1:3001`；`/api` → `127.0.0.1:3000`；`/files` → `127.0.0.1:3000` |
-| 上传体积   | `client_max_body_size 64m;`（面板默认 1m，不改则超过 1MB 的上传被拦成 413）  |
-| 上传超时   | `/api` 加 `proxy_read_timeout 300s; proxy_send_timeout 300s;`               |
-
-> ⚠️ 三条代理规则缺一不可。前端是 SPA，`/api` 与 `/files` 必须一起转发，否则页面能打开但登录、上传、图片全部 404。
-
-> `glimmer-web` **不能**省略。它是 Nitro node-server 产物，`.output/public/` 中只有 `_nuxt/` 与 `favicon.svg`，**没有 `index.html`**（HTML 入口由 Nitro 运行时生成），因此无法当作纯静态站点交给面板的静态托管。
-
-去掉自带 Nginx 后 `/files/` 会回到 API，**访问统计反而变完整**（见下节）；代价是图片流量多过一次 Node。API 自身已返回 `Cache-Control: public, max-age=31536000, immutable`，缓存语义与 Nginx 直服一致。
-
-> 两个编排文件共用项目名与容器名，**二选一**，不要同时运行；切换时 compose 会自动移除多出来的 `glimmer-nginx` 容器，数据都在宿主机的 `./glimmer-data`，不会丢。
-
-### 数据与备份
-
-Docker 部署下全部运行数据都在 `./glimmer-data`（挂载到容器 `/data/glimmer`）：
-
-```
-glimmer-data/
-├── glimmer.db        # SQLite 数据库
-├── uploads/          # 本地存储后端的文件
-└── tmp/              # 上传临时目录（处理完成后自动清理）
-```
-
-重建容器不会丢数据，**备份直接打包这个目录即可**。
-
-### ⚠️ 访问统计的覆盖范围（重要）
-
-统计的计数入口是 API 的 `GET /files/*` 路由，因此**只有「经本项目后端返回的本地存储文件」会被统计**：
-
-- **S3 / WebDAV 后端**：直链由其自有域名（CDN / 对象存储）直接提供，请求根本不经过本项目，**不会被计数**。
-- **本地后端 + Nginx 直服**（本仓库 `nginx.conf` 的默认形态）：图片由 Nginx 直接返回，不经过 API，**不会被计数**。
-- **本地后端 + 反代到 API**：把 `/files/` 的 `alias` 改成 `proxy_pass http://glimmer-api:3000`，此时统计最完整，代价是图片流量要过一遍 Node。用 `docker-compose.1panel.yml` 的面板部署（形态 B）即属此形态。
-
-也就是说：**开箱默认配置下，统计口径 ≈ 本机预览 / 开发环境下的本地后端访问量。**
-若需要精确的全量统计，建议在 Nginx access log 或 CDN 侧另行统计。
-
-（统计采用内存聚合 + 定时落盘，满 5 秒或累计 200 个键刷新一次；`304` 命中不计次数与流量。）
-
-### 单实例假设
-
-限流计数与处理队列都在**进程内存**中。本项目按「一台 VPS、一个 API 进程」设计，未做多实例协调。
+> 注意：该转发**只在生产构建下生效**（开发环境由 `devProxy` 负责）。
+> 想在不启动 API 的情况下单独预览前端产物，用 `pnpm preview` —— 它会自行拉起 nitro 与同源代理，
+> 并在上游不可达时返回带原因的 `502`，不会静默失败。端口可用 `PREVIEW_PORT` / `NITRO_PORT` / `API_PORT` 覆盖。
 
 ### 发布镜像到 Docker Hub（维护者）
 
@@ -310,6 +393,10 @@ git push origin v1.0.0     # 触发构建，推送 1.0.0 与 latest 两个标签
 | 推送到 `main`（且 `apps/**`、`packages/**`、锁文件等有变化） | `latest` |
 | Actions 页面手动触发 | 自定义标签，留空则 `latest` |
 
+发布的镜像只有 **两个**：`glimmer-api` 与 `glimmer-web`。
+Nginx 用的是官方 `nginx:alpine` 镜像，**不占用本项目的镜像标签** ——
+所以「带不带 Nginx」不是靠拉取不同的镜像来区分的，而是靠 compose 的 `--profile nginx`（见上一节）。
+
 > **为什么不用 Docker Hub 自带的自动构建？** 它的 Automated Builds 已于 2026-05 宣布废弃
 > （2027-04-01 完全停用），且需要付费订阅；免 PAT 的 OIDC 登录也只对付费组织开放。
 > GitHub Actions 是 Docker 官方给出的迁移方向，而且**一个仓库就能构建本项目这样的多个镜像**，
@@ -319,7 +406,83 @@ git push origin v1.0.0     # 触发构建，推送 1.0.0 与 latest 两个标签
 > `linux/amd64,linux/arm64` 并启用 `setup-qemu-action` —— 注意在 QEMU 模拟下编译
 > native 模块（better-sqlite3 / sharp）会明显变慢。
 
+## 配置
+
+所有配置都通过环境变量，完整清单与注释见 [`.env.example`](.env.example)。关键项：
+
+| 变量                              | 默认                      | 说明                                                                 |
+| --------------------------------- | ------------------------- | -------------------------------------------------------------------- |
+| `DATABASE_URL`                    | `./data/glimmer.db`       | SQLite 文件路径（容器内建议 `/data/glimmer/glimmer.db`）               |
+| `LOCAL_STORAGE_DIR`               | `./data/uploads`          | 本地存储后端根目录                                                     |
+| `TEMP_DIR`                        | `./data/tmp`              | 上传临时目录（处理完成后自动清理）                                      |
+| `SESSION_SECRET`                  | —                         | 会话签名/派生密钥，**≥ 32 字符，务必修改**                              |
+| `ENCRYPTION_KEY`                  | —                         | 敏感配置加密主密钥（AES-256-GCM），**≥ 32 字符，务必修改**               |
+| `ADMIN_USERNAME`                  | `admin`                   | 首次启动创建的管理员用户名                                              |
+| `ADMIN_PASSWORD`                  | `change-me`               | 首次启动创建的管理员密码，**务必修改**                                  |
+| `SESSION_TTL_DAYS`                | `7`                       | 默认会话有效期（天）；用户可在个人资料里单独覆盖                          |
+| `COOKIE_SECURE`                   | 生产为 `true`             | 仅 HTTPS 下为 `true`；纯 HTTP 访问必须设为 `false`。**`.env.example` 已预设 `false`** |
+| `PUBLIC_BASE_URL`                 | `http://localhost:3000`   | 对外基地址，也是本地后端直链域名的默认值                                 |
+| `TRUST_PROXY`                     | 生产为 `true`             | 是否信任反代传来的 `X-Forwarded-For`。**API 端口直连公网时必须设为 `false`** |
+| `MAX_UPLOAD_SIZE_MB`              | `20`                      | 单文件大小上限                                                          |
+| `QUEUE_CONCURRENCY`               | `2`                       | 异步队列并发数                                                          |
+| `CORS_ORIGIN`                     | `http://localhost:3001`   | 允许的跨域来源，逗号分隔                                                 |
+| `AUTH_RATE_LIMIT_MAX_PER_IP`      | `20`                      | 单个 IP 在窗口内的登录失败上限                                           |
+| `AUTH_RATE_LIMIT_MAX_PER_ACCOUNT` | `5`                       | 单个账号在窗口内的登录失败上限                                           |
+| `AUTH_RATE_LIMIT_WINDOW_SECONDS`  | `900`                     | 限流窗口长度（秒）                                                       |
+
+下面三项**只在 Docker 部署时用到**（它们是给 compose 做变量替换的，应用自身不读取）：
+
+| 变量                        | 默认                      | 说明                                                         |
+| --------------------------- | ------------------------- | ------------------------------------------------------------ |
+| `WEB_PORT`                  | `3001`                    | `glimmer-web` 的对外端口；填 `80` 即可用 `http://IP` 直接访问  |
+| `API_PROXY_TARGET`          | `http://glimmer-api:3000` | 前端把 `/api`、`/files` 转发到哪个后端（改了容器名要同步改）    |
+| `IMAGE_PREFIX` / `IMAGE_TAG` | `praming/` / `latest`    | 镜像来源；把前缀留空即改用本地构建出的镜像                      |
+
+> ⚠️ **`ADMIN_PASSWORD` 只在 `users` 表为空时生效**。若账号已存在，改 `.env` 不会更新密码 ——
+> 请登录后到**个人资料**页修改，或删除数据库重新初始化（会清空所有数据）。
+>
+> 启动时若检测到弱密钥或默认管理员密码，日志中会输出安全提示。
+>
+> ⚠️ 计流数据存在**进程内存**中，因此**登录限流是单实例的**：进程重启即清零（这同时也是「把自己锁在门外」的逃生口），
+> 若将来横向扩成多实例，额度会被实例数放大，那时需要换成 Redis 之类的共享存储。
+
 ---
+
+## 部署要点
+
+### 反向代理与 HTTPS
+
+默认形态**不需要任何反向代理** —— `glimmer-web` 自己会把 `/api` 与 `/files` 转发给 API。
+另外两种形态都是可选的：
+
+- **自带 Nginx**：`docker compose --profile nginx up -d`（见上文「可选：加上 Nginx」）。
+  它的 `nginx.conf` 做两件事：`/` 与 `/api/*` 分流；`location /files/` 直接 `alias` 到数据目录下的
+  `uploads`，图片由 Nginx 直接返回、不消耗 Node 进程，未命中时回源 API。
+- **面板反代**（1Panel / 宝塔）：见上文「可选：已经有 1Panel / 宝塔面板」。
+
+⚠️ 无论哪种形态，`glimmer-web` 都**不能**省略：它是 Nitro node-server 产物，
+`.output/public/` 中只有 `_nuxt/` 与 `favicon.svg`，**没有 `index.html`**
+（HTML 入口由 Nitro 运行时生成），因此不能当作纯静态站点交给面板的「静态网站」功能托管。
+
+### ⚠️ 访问统计的覆盖范围（重要）
+
+统计的计数入口是 API 的 `GET /files/*` 路由，因此**只有「经本项目后端返回的本地存储文件」会被统计**：
+
+| 部署形态 | 图片何时经 API | 统计 |
+| --- | --- | --- |
+| **默认两容器**（含面板只配 `/` 一条规则） | 总是 | **完整** ✅ |
+| 启用 Nginx（`--profile nginx`） | 仅未命中磁盘时 | Nginx 直出的那部分**不计入** ❌ |
+| 面板反代并把 `/files` 单独指到 `:3000` | 总是 | 完整 ✅ |
+| S3 / WebDAV 后端 | 从不（由对象存储自有域名直出） | **不计入** ❌ |
+
+也就是说：**默认形态的统计是全量的**；一旦让 Nginx 或对象存储直出图片，统计口径就只剩「经 API 的那部分」。
+若需要精确的全量统计，建议在 Nginx access log 或 CDN 侧另行统计。
+
+（统计采用内存聚合 + 定时落盘，满 5 秒或累计 200 个键刷新一次；`304` 命中不计次数与流量。）
+
+### 单实例假设
+
+限流计数与处理队列都在**进程内存**中。本项目按「一台 VPS、一个 API 进程」设计，未做多实例协调。
 
 ## API
 
@@ -409,6 +572,35 @@ curl -b cookie.txt -X POST http://localhost:3000/api/upload/check \
 
 ## 常见问题
 
+**Q：`docker compose up -d` 卡在拉取，或报 `manifest unknown` / `pull access denied`？**
+说明镜像还没发布，或 Docker Hub 上的仓库是私有的。改用本地构建，结果完全一样，只是首次要多等几分钟：
+
+```bash
+docker compose up -d --build
+```
+
+**Q：服务起来了，但浏览器打不开页面？**
+按顺序排查：
+
+1. `docker compose ps` —— 两个容器是否都是 `running`（`glimmer-api` 显示 `healthy` 更好）；
+2. `docker compose logs glimmer-web` —— 有没有明显的报错；
+3. **云服务器的安全组 / 防火墙**是否放行了 `WEB_PORT`（默认 3001）—— 这是最常见的原因；
+4. 若把端口改成了 80，确认没被别的东西占用：`sudo ss -lntp | grep :80`。
+
+**Q：想让网址不带端口（直接 `http://IP`）？**
+把 `.env` 里的 `WEB_PORT=3001` 改成 `WEB_PORT=80`，再 `docker compose up -d` 即可。
+80 端口常被面板或其他服务占用，被占用时换个端口，或按「可选：加上 Nginx」那一节处理。
+
+**Q：上传大图失败 / 浏览器报 `413`？**
+① 本项目单文件上限默认 20MB，由 `MAX_UPLOAD_SIZE_MB` 控制；
+② 如果前面有 1Panel / 宝塔面板，它的 `client_max_body_size` 默认只有 **1m**，必须调到 `64m` 或更大 ——
+否则请求在面板层就被拦掉了，**容器日志里不会有任何记录**，极易误判成后端故障。
+
+**Q：忘记管理员密码了？**
+密码以 Argon2id 哈希存储，无法反推。若库里还没有重要数据，最省事的是删库重来：
+停服务 → 删除 `glimmer-data/glimmer.db` → 改 `.env` 里的 `ADMIN_PASSWORD` → 重启，
+启动时会重新初始化管理员。已有数据的话，用另一个管理员账号在「用户管理」里重置。
+
 **Q：`pnpm install` 报 `gyp ERR! find VS Could not find any Visual Studio installation to use`？**
 当前 Node 版本太新，`better-sqlite3` 没有对应 ABI 的预编译包。改用 Node 18 / 20 / 22 / 23（推荐 22），
 并确保「安装依赖」和「运行服务」用的是同一个 Node 大版本。新版仓库已在 `preinstall` 阶段拦截该情况。
@@ -476,13 +668,15 @@ glimmer/
 │       ├── layouts/          # default（侧边栏 + 底部 Tab）/ auth
 │       ├── components/       # ui/* 基础组件 + 业务组件
 │       ├── stores/           # auth / options / upload / gallery / settings
-│       └── composables/      # useApi / useToast / useTheme / useTypography …
+│       ├── composables/      # useApi / useToast / useTheme / useTypography …
+│       └── server/           # Nitro 服务端代码
+│           └── middleware/   #   api-proxy.ts —— 生产环境把 /api、/files 转发给 API
 ├── packages/
 │   └── shared/               # @glimmer/shared —— 类型、常量、Zod schema、纯函数
 ├── scripts/                  # 仓库级脚本（Node 版本守卫 / 预览服务 / 镜像发布）
-├── docker-compose.yml        # 形态 A：自带 glimmer-nginx
-├── docker-compose.1panel.yml # 形态 B：交给面板反代（不含 nginx）
-├── nginx.conf
+├── docker-compose.yml        # 默认：api + web 两个容器（nginx 是可选 profile，默认不启动不拉取）
+├── docker-compose.1panel.yml # 面板反代场景：端口只绑回环，交给 1Panel / 宝塔
+├── nginx.conf                # 可选 Nginx 的配置（仅 --profile nginx 时被挂载）
 ├── .env.example
 └── LICENSE
 ```
