@@ -1,0 +1,52 @@
+# deps
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+.output/
+.nuxt/
+.data/
+
+# env
+.env
+.env.local
+.env.*.local
+
+# runtime data
+glimmer-data/
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+uploads/
+
+# logs / os
+*.log
+npm-debug.log*
+.logs/
+.DS_Store
+Thumbs.db
+
+# tsup 读取 tsup.config.ts 时会生成一份 bundled 副本，构建后可能残留
+tsup.config.bundled_*.mjs
+
+# editors
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# HTTPS 证书（含私钥，绝不入库）
+certs/
+
+# 本地开发辅助：Agent 诊断脚本、工作日志、体检报告
+# 内含本机绝对路径与私有上下文，默认不入库。
+# 若希望把 .workbuddy/tools 下的诊断脚本一并版本化，改成：
+#   .workbuddy/*
+#   !.workbuddy/tools/
+.workbuddy/
+
+# 面向自己的开发文档（部署细节、设计偏离说明、验收对照、默认凭据等）
+# 公开仓库的 README.md 是面向使用者的说明；NOTES.md 只留在本地。
+/NOTES.md

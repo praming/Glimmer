@@ -1,0 +1,16 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // 仅做类型检查（base 中 noEmit: true），不产出文件，因此不需要 rootDir/outDir。
+    // 若设置 rootDir: "src"，则 include 里的 tsup.config.ts / drizzle.config.ts
+    // 会触发 TS6059（file is not under rootDir）。
+    //
+    // declaration: false —— base 里为 packages/shared 这类「库」开启了 declaration，
+    // 但 apps/api 是「应用」，产物由 tsup 打包（dts: false），不发布 .d.ts。
+    // 若保持 true，tsc 会做声明可命名性检查，对导出值报 TS4023/TS2742
+    // （例如 better-sqlite3 的 `export =` 命名空间类型、p-queue 的深层泛型默认参数）。
+    "declaration": false,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts", "drizzle.config.ts", "tsup.config.ts"]
+}

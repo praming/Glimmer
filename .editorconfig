@@ -1,0 +1,22 @@
+# 与 .gitattributes 配合：统一缩进与换行，避免编辑器各自为政
+# 注意：本项目代码风格为「2 空格缩进 + 单引号 + 无分号」，由 prettier 默认风格约定；
+#       .editorconfig 只保证「编辑器不会写出制表符或 CRLF」，不做格式化。
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+# Markdown 行尾两个空格表示换行，不能裁掉
+trim_trailing_whitespace = false
+
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+[Makefile]
+indent_style = tab

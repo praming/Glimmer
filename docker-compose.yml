@@ -1,0 +1,81 @@
+name: glimmer
+
+# 镜像名可通过环境变量定制，便于推送到 Docker Hub：
+#   IMAGE_PREFIX=你的dockerhub用户名/   IMAGE_TAG=1.0.0
+# 不设置时即 glimmer-api:latest / glimmer-web:latest（纯本地使用）。
+# 用法见 README「Docker 部署 → 推送到 Docker Hub」。
+
+services:
+  glimmer-api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: ${IMAGE_PREFIX:-}glimmer-api:${IMAGE_TAG:-latest}
+    container_name: glimmer-api
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=/data/glimmer/glimmer.db
+      - LOCAL_STORAGE_DIR=/data/glimmer/uploads
+      - TEMP_DIR=/data/glimmer/tmp
+      # API 只在 glimmer-net 内网可达，外部请求头由 Nginx 覆写 → 可安全信任 XFF
+      - TRUST_PROXY=true
+    volumes:
+      - ./glimmer-data:/data/glimmer
+    expose:
+      - '3000'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - glimmer-net
+
+  glimmer-web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        - NUXT_PUBLIC_API_BASE=/api
+    image: ${IMAGE_PREFIX:-}glimmer-web:${IMAGE_TAG:-latest}
+    container_name: glimmer-web
+    environment:
+      - NODE_ENV=production
+      - NUXT_PUBLIC_API_BASE=/api
+      - NITRO_HOST=0.0.0.0
+      - NITRO_PORT=3001
+    expose:
+      - '3001'
+    depends_on:
+      - glimmer-api
+    restart: unless-stopped
+    networks:
+      - glimmer-net
+
+  glimmer-nginx:
+    image: nginx:alpine
+    container_name: glimmer-nginx
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      # 本地上传目录直接由 Nginx 提供静态服务（可选，命中时无需回源 API）
+      - ./glimmer-data/uploads:/var/www/glimmer/uploads:ro
+      # HTTPS 证书目录（启用 443 时挂载）
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - glimmer-api
+      - glimmer-web
+    restart: unless-stopped
+    networks:
+      - glimmer-net
+
+networks:
+  glimmer-net:
+    driver: bridge

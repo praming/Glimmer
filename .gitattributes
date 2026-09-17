@@ -1,0 +1,40 @@
+# 统一按 LF 存取，避免 Windows / Linux 协作时整文件 diff
+* text=auto eol=lf
+
+# 文本类型声明（明确指定后 git 才会做换行归一化）
+*.ts   text
+*.tsx  text
+*.vue  text
+*.js   text
+*.mjs  text
+*.cjs  text
+*.json text
+*.css  text
+*.md   text
+*.yml  text
+*.yaml text
+*.conf text
+
+# 批处理 / PowerShell 保留 CRLF，否则在 Windows 上执行会出问题
+*.bat  text eol=crlf
+*.cmd  text eol=crlf
+*.ps1  text eol=crlf
+
+# 二进制：不做换行转换、不参与 diff
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.avif binary
+*.ico  binary
+*.woff binary
+*.woff2 binary
+*.ttf  binary
+*.db   binary
+
+# 构建产物与锁文件：不展示 diff，且在 GitHub 语言统计里折叠
+pnpm-lock.yaml linguist-generated=true -diff
+dist/**        linguist-generated=true
+.output/**     linguist-generated=true
+.nuxt/**       linguist-generated=true

@@ -1,0 +1,29 @@
+{
+  "name": "glimmer-image-hosting",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later",
+  "private": true,
+  "description": "浮光图床 / Glimmer — 轻量团队图床系统",
+  "type": "module",
+  "packageManager": "pnpm@9.15.9",
+  "engines": {
+    "node": ">=20.11 <24"
+  },
+  "scripts": {
+    "preinstall": "node scripts/check-node.mjs",
+    "build:shared": "pnpm --filter @glimmer/shared build",
+    "dev:api": "pnpm --filter @glimmer/api dev",
+    "dev:web": "pnpm --filter @glimmer/web dev",
+    "dev": "pnpm run build:shared && pnpm --parallel --filter @glimmer/api --filter @glimmer/web dev",
+    "build": "pnpm run build:shared && pnpm --filter @glimmer/api build && pnpm --filter @glimmer/web build",
+    "start:api": "pnpm --filter @glimmer/api start",
+    "preview": "node scripts/preview.mjs",
+    "db:migrate": "pnpm --filter @glimmer/api db:migrate",
+    "typecheck": "pnpm run build:shared && pnpm -r typecheck",
+    "docker:up": "docker compose up -d --build",
+    "docker:down": "docker compose down"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.3"
+  }
+}
