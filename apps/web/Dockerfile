@@ -1,5 +1,7 @@
 # ---------- 构建阶段 ----------
-FROM node:20-bookworm-slim AS build
+# 与 apps/api、本地 .nvmrc / engines 保持同一大版本（Node 22 = ABI 127）。
+# web 自身没有原生依赖，但 @glimmer/shared 是两边共用的，统一版本可避免"本地能跑、镜像不能跑"。
+FROM node:22-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -42,7 +44,7 @@ RUN pnpm --filter @glimmer/shared build \
     && pnpm --filter @glimmer/web build
 
 # ---------- 运行阶段 ----------
-FROM node:20-bookworm-slim AS runner
+FROM node:22-bookworm-slim AS runner
 
 ENV NODE_ENV=production
 ENV NITRO_HOST=0.0.0.0

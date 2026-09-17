@@ -1,5 +1,7 @@
 # ---------- 构建阶段 ----------
-FROM node:20-bookworm-slim AS build
+# Node 大版本必须与 apps/api 里原生模块的预编译 ABI 对得上，且与本地 .nvmrc / engines 保持一致。
+# Node 22 = ABI 127，better-sqlite3 / sharp / @node-rs/argon2 都有对应预编译包。
+FROM node:22-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
@@ -32,6 +34,11 @@ COPY scripts/check-node.mjs scripts/check-node.mjs
 # （实测：没锁版本时解析出 type-fest@5.10.0，镜像上还不存在，构建直接失败）。
 RUN pnpm install --filter "@glimmer/api..." --frozen-lockfile
 
+# 原生模块自检：安装期就把「ABI 不匹配」挡在这里，而不是等容器启动才崩。
+# 换基础镜像的 Node 大版本时，node_modules 若被 Docker 缓存复用，就会装成上一个 ABI 的二进制；
+# Docker 的缓存键包含父层，改 FROM 本应使其失效，这里再显式兜一道底。
+RUN node --input-type=module -e "import { createRequire } from 'node:module'; const r = createRequire('/app/apps/api/package.json'); for (const m of ['better-sqlite3','sharp','@node-rs/argon2']) { r(m); console.log('  native ok:', m); } console.log('native modules OK on ' + process.version + ' (ABI ' + process.versions.modules + ')')"
+
 COPY packages/shared packages/shared
 COPY apps/api apps/api
 
@@ -44,7 +51,7 @@ RUN pnpm --filter @glimmer/shared build \
     && pnpm --filter @glimmer/api build
 
 # ---------- 运行阶段 ----------
-FROM node:20-bookworm-slim AS runner
+FROM node:22-bookworm-slim AS runner
 
 ENV NODE_ENV=production
 ENV PORT=3000
