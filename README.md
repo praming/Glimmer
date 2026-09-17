@@ -97,7 +97,11 @@ docker compose logs -f glimmer-api
 | --------------- | ------------------------------------------------- | ----------- |
 | `glimmer-api`   | Hono API + sharp + p-queue，含 `/files/*` 静态兜底  | 3000（内网） |
 | `glimmer-web`   | Nuxt 3（Nitro node-server）                        | 3001（内网） |
-| `glimmer-nginx` | 反向代理：`/api/*` → API，其余 → Web                | 80 / 443    |
+| `glimmer-nginx` | 反向代理：`/api/*` → API，其余 → Web（**可选**）      | 80 / 443    |
+
+> **已经用 1Panel / 宝塔等面板反代？** 那 `glimmer-nginx` 就是重复的一层，可以去掉 ——
+> 改用 `docker compose -f docker-compose.1panel.yml up -d --build`，详见
+> [反向代理与 HTTPS](#反向代理与-https) 的「形态 B」。
 
 > **本地部署不需要 Docker Hub 账号**：`docker compose up -d --build` 是在**本机构建镜像**，只打本地 tag，不会推送或拉取任何仓库。
 >
@@ -138,7 +142,7 @@ pnpm start:api                      # node apps/api/dist/index.js
 pnpm --filter @glimmer/web start    # node apps/web/.output/server/index.mjs
 ```
 
-> 这种方式下前端能加载，但**接口会 404** —— 生产环境依赖 Nginx 同源代理 `/api` 与 `/files`。
+> 这种方式下前端能加载，但**接口会 404** —— 生产环境依赖反向代理（自带 Nginx 或面板反代）同源代理 `/api` 与 `/files`。
 > 想在不装 Nginx 的情况下预览生产产物，用：
 
 ```bash
@@ -189,12 +193,38 @@ pnpm preview      # 终端 B：nitro :3100 + 同源代理 :4000
 
 ### 反向代理与 HTTPS
 
-仓库自带 `nginx.conf`，已完成：
+#### 形态 A：使用仓库自带 Nginx（默认）
 
+`docker-compose.yml` 会额外起一个 `glimmer-nginx` 容器，已完成：
+
+- `/` → `glimmer-web`，`/api/*` → `glimmer-api`；
 - `location /files/` 直接 `alias` 到数据目录下的 `uploads`，本地存储后端的图片由 **Nginx 直接返回**，不消耗 Node 进程；未命中时回源 API。
-- `/api/*` 转发到 `glimmer-api`。
 
 启用 HTTPS：把证书放到 `./certs/`，取消 `nginx.conf` 底部 443 server 块的注释，并把 `COOKIE_SECURE` 设为 `true`。
+
+#### 形态 B：交给面板反代 —— 不需要 `glimmer-nginx`
+
+如果宿主机上已经跑着 **1Panel / 宝塔** 这类面板（自带 OpenResty），那么 `glimmer-nginx` 是重复的一层，可以直接去掉。仓库提供了对应的编排文件：
+
+```bash
+docker compose -f docker-compose.1panel.yml up -d --build
+```
+
+它只起 `glimmer-api` 与 `glimmer-web`，两者端口绑定在 `127.0.0.1`，由面板对外提供 80/443。面板侧需要配置三处：
+
+| 项目       | 配置                                                                       |
+| ---------- | -------------------------------------------------------------------------- |
+| 代理规则   | `/` → `127.0.0.1:3001`；`/api` → `127.0.0.1:3000`；`/files` → `127.0.0.1:3000` |
+| 上传体积   | `client_max_body_size 64m;`（面板默认 1m，不改则超过 1MB 的上传被拦成 413）  |
+| 上传超时   | `/api` 加 `proxy_read_timeout 300s; proxy_send_timeout 300s;`               |
+
+> ⚠️ 三条代理规则缺一不可。前端是 SPA，`/api` 与 `/files` 必须一起转发，否则页面能打开但登录、上传、图片全部 404。
+
+> `glimmer-web` **不能**省略。它是 Nitro node-server 产物，`.output/public/` 中只有 `_nuxt/` 与 `favicon.svg`，**没有 `index.html`**（HTML 入口由 Nitro 运行时生成），因此无法当作纯静态站点交给面板的静态托管。
+
+去掉自带 Nginx 后 `/files/` 会回到 API，**访问统计反而变完整**（见下节）；代价是图片流量多过一次 Node。API 自身已返回 `Cache-Control: public, max-age=31536000, immutable`，缓存语义与 Nginx 直服一致。
+
+> 两个编排文件共用项目名与容器名，**二选一**，不要同时运行；切换时 compose 会自动移除多出来的 `glimmer-nginx` 容器，数据都在宿主机的 `./glimmer-data`，不会丢。
 
 ### 数据与备份
 
@@ -215,7 +245,7 @@ glimmer-data/
 
 - **S3 / WebDAV 后端**：直链由其自有域名（CDN / 对象存储）直接提供，请求根本不经过本项目，**不会被计数**。
 - **本地后端 + Nginx 直服**（本仓库 `nginx.conf` 的默认形态）：图片由 Nginx 直接返回，不经过 API，**不会被计数**。
-- **本地后端 + 反代到 API**：把 `/files/` 的 `alias` 改成 `proxy_pass http://glimmer-api:3000`，此时统计最完整，代价是图片流量要过一遍 Node。
+- **本地后端 + 反代到 API**：把 `/files/` 的 `alias` 改成 `proxy_pass http://glimmer-api:3000`，此时统计最完整，代价是图片流量要过一遍 Node。用 `docker-compose.1panel.yml` 的面板部署（形态 B）即属此形态。
 
 也就是说：**开箱默认配置下，统计口径 ≈ 本机预览 / 开发环境下的本地后端访问量。**
 若需要精确的全量统计，建议在 Nginx access log 或 CDN 侧另行统计。
@@ -387,7 +417,8 @@ glimmer/
 ├── packages/
 │   └── shared/               # @glimmer/shared —— 类型、常量、Zod schema、纯函数
 ├── scripts/                  # 仓库级脚本（Node 版本守卫 / 预览服务 / 镜像发布）
-├── docker-compose.yml
+├── docker-compose.yml        # 形态 A：自带 glimmer-nginx
+├── docker-compose.1panel.yml # 形态 B：交给面板反代（不含 nginx）
 ├── nginx.conf
 ├── .env.example
 └── LICENSE

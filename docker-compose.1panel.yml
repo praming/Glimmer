@@ -1,0 +1,99 @@
+name: glimmer
+
+# ============================================================================
+# 面板反代场景（1Panel / 宝塔 / 已有宿主机 Nginx）的部署编排
+# ============================================================================
+# 与 docker-compose.yml 的唯一区别：**不含 glimmer-nginx**。
+# 面板自带的 OpenResty 接管 80/443、TLS 与 location 分流，本文件只起 api + web，
+# 端口一律绑定回环地址，仅供宿主机上的反向代理访问。
+#
+# 用法（与 docker-compose.yml 二选一，不要同时跑）：
+#   docker compose -f docker-compose.1panel.yml up -d --build
+#   docker compose -f docker-compose.1panel.yml logs -f glimmer-api
+#
+# 两者共用项目名 `glimmer` 与容器名，切换时 compose 会自动移除多出来的
+# glimmer-nginx 容器；数据都在宿主机的 ./glimmer-data，不会丢。
+#
+# ---------------------------------------------------------------------------
+# 面板侧配置（缺一不可，否则上传/登录/图片全部 404）
+# ---------------------------------------------------------------------------
+# 1) 反向代理规则至少两条：
+#      路径 /      → http://127.0.0.1:3001    前端（Nitro node-server）
+#      路径 /api   → http://127.0.0.1:3000    API
+#      路径 /files → http://127.0.0.1:3000    图片直链
+#
+#    ⚠️ 若面板只允许一条规则，请把 / 指到 3001 后，在该站点的配置文件里
+#       手工补上 /api 与 /files 两个 location —— 少了它们前端能打开但接口全 404，
+#       图片也会全部挂掉（前端是 SPA，不带同源代理就找不到后端）。
+#
+# 2) 调大上传体积上限。1Panel 的 OpenResty 默认 client_max_body_size 是 1m，
+#    而本项目允许 20MB。在 http 段或该 server 段内加：
+#        client_max_body_size 64m;
+#    否则超过 1MB 的上传会被面板层直接拦成 413（API 根本收不到请求）。
+#
+# 3) 上传是慢请求，建议把 /api 的超时放宽，与自带 nginx.conf 保持一致：
+#        proxy_read_timeout 300s;
+#        proxy_send_timeout 300s;
+#        proxy_request_buffering off;
+# ============================================================================
+
+services:
+  glimmer-api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: ${IMAGE_PREFIX:-}glimmer-api:${IMAGE_TAG:-latest}
+    container_name: glimmer-api
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - DATABASE_URL=/data/glimmer/glimmer.db
+      - LOCAL_STORAGE_DIR=/data/glimmer/uploads
+      - TEMP_DIR=/data/glimmer/tmp
+      # 请求头由宿主机上的面板反代覆写，因此可以信任 XFF。
+      # ⚠️ 前提是下面的端口只绑 127.0.0.1：一旦改成 0.0.0.0 并放行到公网，
+      #    直连者就能伪造 X-Forwarded-For 拆散 IP 维度计数、绕过登录限流，
+      #    那种部署必须把本项改为 false。
+      - TRUST_PROXY=true
+    volumes:
+      - ./glimmer-data:/data/glimmer
+    # 注意是 ports 而非 expose：面板的 OpenResty 在宿主机上（或独立网络），
+    # 通过宿主机回环访问最稳，无需把面板容器接入 glimmer-net。
+    ports:
+      - '127.0.0.1:${API_HOST_PORT:-3000}:3000'
+    healthcheck:
+      test: ['CMD', 'node', '-e', "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - glimmer-net
+
+  glimmer-web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        - NUXT_PUBLIC_API_BASE=/api
+    image: ${IMAGE_PREFIX:-}glimmer-web:${IMAGE_TAG:-latest}
+    container_name: glimmer-web
+    environment:
+      - NODE_ENV=production
+      - NUXT_PUBLIC_API_BASE=/api
+      - NITRO_HOST=0.0.0.0
+      - NITRO_PORT=3001
+    ports:
+      - '127.0.0.1:${WEB_HOST_PORT:-3001}:3001'
+    depends_on:
+      - glimmer-api
+    restart: unless-stopped
+    networks:
+      - glimmer-net
+
+networks:
+  glimmer-net:
+    driver: bridge
