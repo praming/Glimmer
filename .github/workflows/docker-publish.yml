@@ -1,15 +1,34 @@
 name: docker-publish
 
-# 本机没装 Docker 也能发布镜像：打一个 v 开头的 tag 推到 GitHub，
-# 这里会自动构建并推送到 Docker Hub。
+# 把镜像发布到 Docker Hub，供他人直接 `docker pull` 部署。
 #
-# 前置：仓库 Settings → Secrets and variables → Actions 添加两个 secret
-#   DOCKERHUB_USERNAME   Docker Hub 用户名
-#   DOCKERHUB_TOKEN      在 Docker Hub → Account Settings → Personal access tokens 生成
-# （不要用登录密码，Docker Hub 已不支持密码推送。）
+# 触发方式：
+#   1) 推送 v* 标签（如 v1.0.0）→ 构建并推送该版本号 + latest
+#   2) 推送到 main 分支 → 构建并推送 latest（仅当构建相关文件变化时）
+#   3) Actions 页面手动触发 → 可自定义标签
+#
+# 前置条件（只需配一次）：
+#   GitHub 仓库 → Settings → Secrets and variables → Actions → New repository secret
+#     DOCKERHUB_USERNAME   Docker Hub 用户名
+#     DOCKERHUB_TOKEN      在 Docker Hub → Account settings → Personal access tokens 生成
+#                          （读写权限即可；不要用登录密码，Docker Hub 已不支持密码推送）
+#
+# 说明：Docker Hub 自带的 Automated Builds 已于 2026-05 宣布废弃（2027-04-01 完全停用），
+#       且要求付费订阅、免 PAT 的 OIDC 登录也只对付费组织开放 —— 所以这里用 GitHub Actions，
+#       它同时也是 Docker 官方给出的迁移方案，并且能用一个仓库构建多个镜像（Docker Hub 原生做不到）。
 
 on:
   push:
+    branches:
+      - main
+    paths:
+      # 只在真正影响镜像内容的路径变化时构建，避免改个 README 也跑 CI
+      - 'apps/**'
+      - 'packages/**'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'pnpm-workspace.yaml'
+      - '.github/workflows/docker-publish.yml'
     tags:
       - 'v*'
   workflow_dispatch:
@@ -17,11 +36,20 @@ on:
       tag:
         description: '镜像标签（留空则用 latest）'
         required: false
-        default: latest
+        default: ''
+
+# 同一时刻只跑一个，避免连续推送时互相覆盖
+concurrency:
+  group: docker-publish-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  # 两个镜像共用同一版本号，避免手工漏推一个
-  IMAGE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  # 三种触发源的标签推导：
+  #   手动触发 → 用输入值（留空则 latest）
+  #   标签推送 → 用标签名（v1.0.0）
+  #   分支推送 → latest
+  # 注意不能简单写 `github.event.inputs.tag || github.ref_name`：手动触发留空时会退化成分支名 main。
+  IMAGE_TAG: ${{ github.event_name == 'workflow_dispatch' && (github.event.inputs.tag || 'latest') || (startsWith(github.ref, 'refs/tags/') && github.ref_name || 'latest') }}
 
 jobs:
   publish:
@@ -39,7 +67,7 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      # 需要 linux/arm64 时打开（构建耗时明显增加）
+      # 需要 linux/arm64 时打开（构建耗时明显增加，QEMU 模拟下 sharp/native 会慢很多）
       # - uses: docker/setup-qemu-action@v3
 
       - name: 登录 Docker Hub

@@ -109,6 +109,33 @@ docker compose logs -f glimmer-api
 >
 > 更新版本：`git pull && docker compose up -d --build`。
 
+#### 免构建：直接拉取 Docker Hub 上的镜像
+
+不想在服务器上编译（首次构建要装 C++ 工具链、约需 3–8 分钟）时，可以用已发布好的镜像。
+每次打 `v*` 标签、或向 `main` 推送构建相关改动时，GitHub Actions 会自动构建并推送到 Docker Hub
+（见 [发布镜像到 Docker Hub](#发布镜像到-docker-hub维护者)）。
+
+在 `.env` 里指定镜像来源（这两项就是给 compose 做变量替换的）：
+
+```bash
+IMAGE_PREFIX=你的DockerHub用户名/
+IMAGE_TAG=1.0.0        # 或 latest
+```
+
+然后拉取并启动 —— `--no-build` 保证不会触发本地构建：
+
+```bash
+git clone https://github.com/praming/Glimmer.git   # 只为取 compose 文件与 nginx.conf
+cd Glimmer
+cp .env.example .env    # 仍需修改 SESSION_SECRET / ENCRYPTION_KEY / ADMIN_PASSWORD / PUBLIC_BASE_URL
+docker compose pull
+docker compose up -d --no-build
+```
+
+> 涉及两个镜像：`glimmer-api` 与 `glimmer-web`，**版本号必须一致**，不要混用不同版本。
+>
+> `IMAGE_PREFIX` 结尾的 `/` 不能省；留空则回到「本地构建」模式。
+
 ### 方式二：本地开发
 
 > ⚠️ **Node 版本必须是 18 / 20 / 22 / 23（推荐 22）**
@@ -255,6 +282,42 @@ glimmer-data/
 ### 单实例假设
 
 限流计数与处理队列都在**进程内存**中。本项目按「一台 VPS、一个 API 进程」设计，未做多实例协调。
+
+### 发布镜像到 Docker Hub（维护者）
+
+镜像由 GitHub Actions 自动构建并推送，配置见 [`.github/workflows/docker-publish.yml`](.github/workflows/docker-publish.yml)。
+
+**一次性准备**
+
+1. 在 Docker Hub 生成访问令牌：Account settings → Personal access tokens → 权限选 **Read & Write**。
+2. 在 GitHub 仓库添加两个 secret（Settings → Secrets and variables → Actions）：
+   - `DOCKERHUB_USERNAME`：你的 Docker Hub 用户名
+   - `DOCKERHUB_TOKEN`：上一步生成的令牌
+   不要用登录密码 —— Docker Hub 已不支持密码推送。
+3. 两个仓库**不必手动创建**，首次推送时 Docker Hub 会自动建；但请到该仓库的 **Settings** 确认
+   可见性是 **Public**，否则别人拉不到镜像。
+
+**发布一个版本**
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0     # 触发构建，推送 1.0.0 与 latest 两个标签
+```
+
+| 触发方式 | 推送到 Docker Hub 的标签 |
+| --- | --- |
+| 推送 `v*` 标签 | 版本号（如 `1.0.0`）+ `latest` |
+| 推送到 `main`（且 `apps/**`、`packages/**`、锁文件等有变化） | `latest` |
+| Actions 页面手动触发 | 自定义标签，留空则 `latest` |
+
+> **为什么不用 Docker Hub 自带的自动构建？** 它的 Automated Builds 已于 2026-05 宣布废弃
+> （2027-04-01 完全停用），且需要付费订阅；免 PAT 的 OIDC 登录也只对付费组织开放。
+> GitHub Actions 是 Docker 官方给出的迁移方向，而且**一个仓库就能构建本项目这样的多个镜像**，
+> 这是 Docker Hub 原生方案做不到的（每个 repository 只能配一个 Dockerfile）。
+
+> 镜像默认只构建 `linux/amd64`。需要 ARM 时把 workflow 里的 `platforms` 改为
+> `linux/amd64,linux/arm64` 并启用 `setup-qemu-action` —— 注意在 QEMU 模拟下编译
+> native 模块（better-sqlite3 / sharp）会明显变慢。
 
 ---
 
