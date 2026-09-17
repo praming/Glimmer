@@ -13,6 +13,11 @@ COPY pnpm-workspace.yaml package.json .npmrc ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY apps/web/package.json apps/web/package.json
 
+# 根 package.json 挂的 preinstall 守卫（better-sqlite3 的 Node/ABI 检查）。
+# pnpm 是否会执行工作区根的 preinstall 取决于版本与配置；一旦执行而文件不存在，
+# 安装会以 "Cannot find module '/app/scripts/check-node.mjs'" 直接中断，所以先 COPY 进来。
+COPY scripts/check-node.mjs scripts/check-node.mjs
+
 RUN pnpm install --filter "@glimmer/web..." --no-frozen-lockfile
 
 COPY packages/shared packages/shared

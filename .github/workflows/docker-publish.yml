@@ -37,6 +37,13 @@ on:
         description: '镜像标签（留空则用 latest）'
         required: false
         default: ''
+      push:
+        description: '是否推送到 Docker Hub；选 false 表示只验证镜像能否构建成功（不需要凭据）'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+        default: 'true'
 
 # 同一时刻只跑一个，避免连续推送时互相覆盖
 concurrency:
@@ -70,7 +77,27 @@ jobs:
       # 需要 linux/arm64 时打开（构建耗时明显增加，QEMU 模拟下 sharp/native 会慢很多）
       # - uses: docker/setup-qemu-action@v3
 
+      # 缺少 / 写错 secret 名时，docker/login-action 只会抛一句
+      # "Username and password required"，不容易看出是配置问题，这里先自己检查一遍。
+      - name: 检查 Docker Hub 凭据
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push != 'false' }}
+        env:
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          missing=""
+          [ -z "$DH_USER" ] && missing="$missing DOCKERHUB_USERNAME"
+          [ -z "$DH_TOKEN" ] && missing="$missing DOCKERHUB_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少仓库 secret：${missing# }"
+            echo "Settings → Secrets and variables → Actions → New repository secret，"
+            echo "需要两个「名称完全一致」的 secret：DOCKERHUB_USERNAME 与 DOCKERHUB_TOKEN。"
+            exit 1
+          fi
+          echo "凭据已就绪，Docker Hub 用户：$DH_USER"
+
       - name: 登录 Docker Hub
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.push != 'false' }}
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -83,7 +110,7 @@ jobs:
           file: ${{ matrix.dockerfile }}
           # 需要多架构时改成 linux/amd64,linux/arm64 并启用上面的 qemu
           platforms: linux/amd64
-          push: true
+          push: ${{ github.event_name != 'workflow_dispatch' || inputs.push != 'false' }}
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/glimmer-${{ matrix.service }}:${{ env.IMAGE_TAG }}
             ${{ secrets.DOCKERHUB_USERNAME }}/glimmer-${{ matrix.service }}:latest
