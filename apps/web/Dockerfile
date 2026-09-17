@@ -9,16 +9,23 @@ RUN corepack enable
 
 WORKDIR /app
 
-COPY pnpm-workspace.yaml package.json .npmrc ./
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
 COPY packages/shared/package.json packages/shared/package.json
 COPY apps/web/package.json apps/web/package.json
+# 工作区必须「形状完整」：lockfile 里记录了 apps/api 这个 importer，
+# 缺了它的 package.json，pnpm 会认为 lockfile 与工作区不一致而拒绝安装。
+# 注意这不等于会装 api 的依赖 —— 下面用 --filter 限定了范围。
+COPY apps/api/package.json apps/api/package.json
 
 # 根 package.json 挂的 preinstall 守卫（better-sqlite3 的 Node/ABI 检查）。
-# pnpm 是否会执行工作区根的 preinstall 取决于版本与配置；一旦执行而文件不存在，
+# 一旦 pnpm 执行工作区根的 preinstall 而文件不存在，
 # 安装会以 "Cannot find module '/app/scripts/check-node.mjs'" 直接中断，所以先 COPY 进来。
 COPY scripts/check-node.mjs scripts/check-node.mjs
 
-RUN pnpm install --filter "@glimmer/web..." --no-frozen-lockfile
+# 必须带 pnpm-lock.yaml 并加 --frozen-lockfile：不带 lockfile 时 pnpm 会现场解析最新版本，
+# 而 .npmrc 指向国内镜像、镜像同步有滞后，就会 ERR_PNPM_FETCH_404
+# （实测：没锁版本时解析出 type-fest@5.10.0，镜像上还不存在，构建直接失败）。
+RUN pnpm install --filter "@glimmer/web..." --frozen-lockfile
 
 COPY packages/shared packages/shared
 COPY apps/web apps/web
