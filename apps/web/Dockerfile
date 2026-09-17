@@ -23,6 +23,11 @@ RUN pnpm install --filter "@glimmer/web..." --no-frozen-lockfile
 COPY packages/shared packages/shared
 COPY apps/web apps/web
 
+# packages/shared 的 tsconfig.json 是 "extends": "../../tsconfig.base.json"。
+# 不 COPY 这个文件，extends 会静默失效（只报一句 WARNING），moduleResolution 回落到默认值，
+# 编译时连 zod 都解析不到，构建以 TS2792 + ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL 失败。
+COPY tsconfig.base.json tsconfig.base.json
+
 ARG NUXT_PUBLIC_API_BASE=/api
 ENV NUXT_PUBLIC_API_BASE=$NUXT_PUBLIC_API_BASE
 
