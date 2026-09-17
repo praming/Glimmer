@@ -111,8 +111,11 @@ jobs:
           # 需要多架构时改成 linux/amd64,linux/arm64 并启用上面的 qemu
           platforms: linux/amd64
           push: ${{ github.event_name != 'workflow_dispatch' || inputs.push != 'false' }}
+          # 用户名取不到时（例如只构建不推送的验证运行）必须有个合法占位，
+          # 否则标签会拼成 "/glimmer-api:latest"，buildx 会以
+          # "invalid reference format" 直接退出，连构建都不会开始。
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/glimmer-${{ matrix.service }}:${{ env.IMAGE_TAG }}
-            ${{ secrets.DOCKERHUB_USERNAME }}/glimmer-${{ matrix.service }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME || 'glimmer-local' }}/glimmer-${{ matrix.service }}:${{ env.IMAGE_TAG }}
+            ${{ secrets.DOCKERHUB_USERNAME || 'glimmer-local' }}/glimmer-${{ matrix.service }}:latest
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
