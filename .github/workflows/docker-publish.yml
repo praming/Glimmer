@@ -145,16 +145,28 @@ jobs:
       - name: 报告镜像体积
         run: |
           {
-            echo "### 镜像体积（未压缩）"
+            echo "### 镜像体积"
             echo ""
-            echo "| 镜像 | 体积 |"
-            echo "| --- | --- |"
+            echo "| 镜像 | 未压缩（\`docker images\`） | 压缩后（\`docker pull\` 实下） |"
+            echo "| --- | --- | --- |"
           } >> "$GITHUB_STEP_SUMMARY"
           for svc in api web; do
-            size=$(docker image inspect --format '{{.Size}}' "$DH_USER/glimmer-$svc:latest")
-            mb=$(( size / 1048576 ))
-            echo "glimmer-$svc: ${mb} MB（${size} 字节）"
-            echo "| glimmer-$svc:latest | ${mb} MB |" >> "$GITHUB_STEP_SUMMARY"
+            ref="$DH_USER/glimmer-$svc:latest"
+            size=$(docker image inspect --format '{{.Size}}' "$ref")
+
+            # 压缩后体积 = manifest 里各层 size 之和，也就是 docker pull 真正下载的字节数。
+            # buildx 推的是 manifest list，先取第一个子 manifest 的 digest 再算。
+            raw=$(docker buildx imagetools inspect --raw "$ref")
+            if echo "$raw" | jq -e 'has("manifests")' > /dev/null 2>&1; then
+              digest=$(echo "$raw" | jq -r '.manifests[0].digest')
+              raw=$(docker buildx imagetools inspect --raw "$DH_USER/glimmer-$svc@$digest")
+            fi
+            packed=$(echo "$raw" | jq '[.layers[].size] | add')
+
+            umb=$(( size / 1048576 ))
+            pmb=$(( packed / 1048576 ))
+            echo "glimmer-$svc: 未压缩 ${umb} MB / 压缩后 ${pmb} MB"
+            echo "| glimmer-$svc:latest | ${umb} MB | ${pmb} MB |" >> "$GITHUB_STEP_SUMMARY"
           done
 
       - name: 启动 API 并探活
