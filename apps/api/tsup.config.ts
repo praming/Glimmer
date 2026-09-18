@@ -1,7 +1,10 @@
 import { defineConfig } from 'tsup'
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  // 两个入口：服务器进程，以及维护用的密码重置 CLI
+  // （产出 dist/index.js 与 dist/cli/reset-password.js，后者随镜像一起发布，
+  //   供 `docker exec glimmer-api node apps/api/dist/cli/reset-password.js` 使用）
+  entry: ['src/index.ts', 'src/cli/reset-password.ts'],
   format: ['esm'],
   target: 'node20',
   platform: 'node',

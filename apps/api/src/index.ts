@@ -60,6 +60,15 @@ async function main(): Promise<void> {
       if (result.createdAdmin) {
         lines.push(`  已创建管理员账号：${result.adminUsername}（请尽快修改密码）`)
       }
+      if (result.ignoredAdminPassword) {
+        // 这条提示专治「改了 .env 里的密码却怎么都登不上」：ADMIN_PASSWORD 只在空库
+        // 首次启动时生效，账号已存在时它被静默忽略。把届时的处置方式直接写进日志，
+        // 用户 `docker compose logs` 就能看到，不必去翻文档。
+        lines.push(
+          `  ⚠️ 已忽略 ADMIN_PASSWORD：管理员账号已存在，该变量只在数据库为空时生效`,
+          `     忘记密码请执行：docker exec glimmer-api node apps/api/dist/cli/reset-password.js --list`,
+        )
+      }
       if (restored > 0) {
         lines.push(`  已恢复 ${restored} 个未完成的处理任务`)
       }

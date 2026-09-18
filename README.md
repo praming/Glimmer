@@ -164,6 +164,11 @@ docker compose logs -f   # 跟踪日志；按 Ctrl+C 退出，不会停服务
 访问 `http://你的服务器IP:3001`，用 **`admin` / `change-me`** 登录
 （若在 `.env` 里把 `WEB_PORT` 改成了 `80`，则直接访问 `http://你的服务器IP`）。
 
+> 如果你启动前就建过 `.env` 并填了 `ADMIN_PASSWORD`，请用**你填的那个**密码 ——
+> `change-me` 只在没配置过时才是默认值。两个都试过仍登不上，见
+> 「常见问题 → 登录提示「用户名或密码不正确」，或忘记管理员密码了」，
+> 那里有一条命令可以**直接重置**，不必删库。
+
 登进去后建议顺手做三件事：
 
 1. 到**「个人资料」把密码改掉** —— `ADMIN_PASSWORD` 只在**首次初始化**时生效，之后改 `.env` 不会同步；
@@ -190,8 +195,12 @@ cp .env.example .env
 
 完整清单见 [配置](#配置)。
 
-> `ADMIN_PASSWORD` 只在 `users` 表为空时生效。账号一旦创建，改 `.env` 不会同步密码 ——
-> 请登录后到**「个人资料」**修改。
+> ⚠️ `ADMIN_PASSWORD` **只在 `users` 表为空的那一次启动**里用于创建管理员。账号一旦创建，
+> 密码哈希就已落库，之后再改 `.env` 不会被采纳（启动日志里会明确打印「已忽略 ADMIN_PASSWORD」）。
+> 所以：「先 `up -d` 看了一眼，才想起去建 `.env`」这种顺序，密码是不会生效的。
+>
+> 日常改密码：登录后到**「个人资料」**；已经登不进去：用
+> `docker exec glimmer-api node apps/api/dist/cli/reset-password.js` 重置（见「常见问题」）。
 
 ### 这两个容器分别在做什么
 
@@ -444,8 +453,10 @@ Nginx 用的是官方 `nginx:alpine` 镜像，**不占用本项目的镜像标�
 | `API_PROXY_TARGET`          | `http://glimmer-api:3000` | 前端把 `/api`、`/files` 转发到哪个后端（改了容器名要同步改）    |
 | `IMAGE_PREFIX` / `IMAGE_TAG` | `praming/` / `latest`    | 镜像来源；把前缀留空即改用本地构建出的镜像                      |
 
-> ⚠️ **`ADMIN_PASSWORD` 只在 `users` 表为空时生效**。若账号已存在，改 `.env` 不会更新密码 ——
-> 请登录后到**个人资料**页修改，或删除数据库重新初始化（会清空所有数据）。
+> ⚠️ **`ADMIN_PASSWORD` 只在 `users` 表为空的那一次启动里生效**。账号一旦创建，改 `.env`
+> 不会更新密码（启动日志会打印「已忽略 ADMIN_PASSWORD」）。日常改密码请到**个人资料**页；
+> 已经登不进去时用 `docker exec glimmer-api node apps/api/dist/cli/reset-password.js` 重置 ——
+> **不必删库**（见「常见问题」）。
 >
 > 启动时若检测到弱密钥或默认管理员密码，日志中会输出安全提示。
 >
@@ -602,10 +613,36 @@ docker compose up -d --build
 ② 如果前面有 1Panel / 宝塔面板，它的 `client_max_body_size` 默认只有 **1m**，必须调到 `64m` 或更大 ——
 否则请求在面板层就被拦掉了，**容器日志里不会有任何记录**，极易误判成后端故障。
 
-**Q：忘记管理员密码了？**
-密码以 Argon2id 哈希存储，无法反推。若库里还没有重要数据，最省事的是删库重来：
-停服务 → 删除 `glimmer-data/glimmer.db` → 改 `.env` 里的 `ADMIN_PASSWORD` → 重启，
-启动时会重新初始化管理员。已有数据的话，用另一个管理员账号在「用户管理」里重置。
+**Q：登录提示「用户名或密码不正确」，或忘记管理员密码了？**
+先别急着怀疑自己记错 —— 绝大多数是**你填的密码不是数据库里那个**：
+
+1. `ADMIN_USERNAME` / `ADMIN_PASSWORD` **只在数据库为空的那一次启动里生效**。
+   如果你是「先 `docker compose up -d` 跑起来，之后才建 `.env`」，那么库里存的仍是
+   `change-me`，后来写进 `.env` 的密码被静默忽略了（可查启动日志确认：
+   `docker compose logs glimmer-api | grep 已忽略`）。
+2. `.env` 必须和 `docker-compose.yml` **在同一个目录**。面板部署时是面板的编排项目目录，
+   放在别处（例如你下载 yml 的那个目录）等于没配。
+3. 用户名**区分大小写**，`Admin` 与 `admin` 是两个不同的账号名。
+
+**重置密码**（不需删库、不需停服，新镜像自带该命令）：
+
+```bash
+# 1) 先看一眼库里到底有哪些账号（用户名、角色、是否被禁用）
+docker exec glimmer-api node apps/api/dist/cli/reset-password.js --list
+
+# 2) 重置密码 —— 同时会撤销该账号的全部登录会话与 API 令牌
+docker exec glimmer-api node apps/api/dist/cli/reset-password.js admin '你的新密码'
+
+# 账号显示「已禁用」时，加 --enable 一并解除
+docker exec glimmer-api node apps/api/dist/cli/reset-password.js admin '你的新密码' --enable
+```
+
+新密码**立即生效，无需重启**；规则与界面一致（8 ~ 128 个字符）。
+若提示找不到该文件，说明镜像还是旧的，拉一下即可：`docker compose pull && docker compose up -d`
+
+> 连续输错 5 次会触发限流，此时报的是「尝试过于频繁，请在 N 秒后重试」而不是
+> 「用户名或密码不正确」——**两者是两回事**：前者等 15 分钟（或重启 API 容器，额度在内存里）
+> 再试，后者才是真的密码不对。
 
 **Q：`pnpm install` 报 `gyp ERR! find VS Could not find any Visual Studio installation to use`？**
 当前 Node 版本太新，`better-sqlite3` 没有对应 ABI 的预编译包。改用 Node 18 / 20 / 22 / 23（推荐 22），

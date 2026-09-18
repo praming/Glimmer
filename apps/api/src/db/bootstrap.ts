@@ -201,6 +201,15 @@ function applyLightMigrations(): void {
 export interface BootstrapResult {
   createdAdmin: boolean
   adminUsername: string
+  /**
+   * 数据库里已有账号，但环境变量里仍显式设置了 ADMIN_PASSWORD。
+   *
+   * 该变量**只在首次启动、users 表为空时**用于创建管理员；密码哈希一旦落库，
+   * 之后再改它不会有任何效果。这是最常见的一类困惑——「我在 .env 里换了密码，
+   * 怎么还提示用户名或密码不正确」——所以这里显式报出来，由调用方提示改用
+   * `cli/reset-password` 重置，而不是让用户对着一个被静默忽略的变量反复试。
+   */
+  ignoredAdminPassword: boolean
 }
 
 /**
@@ -247,13 +256,19 @@ export async function bootstrap(): Promise<BootstrapResult> {
          VALUES (?, ?, ?, 'admin', 0, ?, ?)`,
       )
       .run(randomUUID(), env.ADMIN_USERNAME, passwordHash, now, now)
-    return { createdAdmin: true, adminUsername: env.ADMIN_USERNAME }
+    return { createdAdmin: true, adminUsername: env.ADMIN_USERNAME, ignoredAdminPassword: false }
   }
 
   // 清理过期会话
   sqlite.prepare(`DELETE FROM sessions WHERE expires_at <= ?`).run(new Date().toISOString())
 
-  return { createdAdmin: false, adminUsername: env.ADMIN_USERNAME }
+  return {
+    createdAdmin: false,
+    adminUsername: env.ADMIN_USERNAME,
+    // 判据用 process.env 而非 env.ADMIN_PASSWORD：默认值 change-me 不算「用户设置过」，
+    // 否则每个没建 .env 的部署都会在每次重启时收到这条提示。
+    ignoredAdminPassword: Boolean(process.env.ADMIN_PASSWORD),
+  }
 }
 
 export { paths }
