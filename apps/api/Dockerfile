@@ -1,6 +1,11 @@
 # ---------- 构建阶段 ----------
 # Node 大版本必须与 apps/api 里原生模块的预编译 ABI 对得上，且与本地 .nvmrc / engines 保持一致。
 # Node 22 = ABI 127，better-sqlite3 / sharp / @node-rs/argon2 都有对应预编译包。
+#
+# 本镜像分三个阶段，目的是**只把运行需要的东西带进最终镜像**：
+#   build     完整依赖（含 devDependencies）+ 编译 shared / api
+#   prod-deps 只装生产依赖（不带 tsup / typescript / tsx / drizzle-kit / @types）
+#   runner    最终镜像 = 基础镜像 + prod-deps 的依赖 + build 的 dist
 FROM node:22-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
@@ -50,6 +55,37 @@ COPY tsconfig.base.json tsconfig.base.json
 RUN pnpm --filter @glimmer/shared build \
     && pnpm --filter @glimmer/api build
 
+# ---------- 生产依赖阶段 ----------
+# 单独一层只装运行时需要的依赖。build 阶段那份带着 tsup / typescript / tsx / drizzle-kit /
+# @types/* 等纯编译期工具，直接 COPY 进运行镜像会白占几十 MB。
+FROM node:22-bookworm-slim AS prod-deps
+
+ENV PNPM_HOME=/pnpm
+ENV PATH=$PNPM_HOME:$PATH
+ENV CI=true
+
+RUN corepack enable
+
+WORKDIR /app
+
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml .npmrc ./
+COPY packages/shared/package.json packages/shared/package.json
+COPY apps/api/package.json apps/api/package.json
+COPY apps/web/package.json apps/web/package.json
+COPY scripts/check-node.mjs scripts/check-node.mjs
+
+RUN pnpm install --filter "@glimmer/api..." --prod --frozen-lockfile
+
+# 断言 --prod 真的把编译期工具挡在外面了。没有这道检查的话，
+# 一旦 pnpm 行为变化，镜像会悄悄胖回去而没人发现。
+RUN pkgs=$(ls node_modules/.pnpm) \
+    && for bad in tsup typescript tsx drizzle-kit; do \
+         if echo "$pkgs" | grep -q "^${bad}@"; then \
+           echo "生产依赖里不该出现 ${bad}"; exit 1; \
+         fi; \
+       done \
+    && echo "[glimmer] 已确认生产依赖不含 tsup / typescript / tsx / drizzle-kit"
+
 # ---------- 运行阶段 ----------
 FROM node:22-bookworm-slim AS runner
 
@@ -60,13 +96,28 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
+# 运行期只用 `node` 跑编译产物，npm / corepack 都用不到，删掉能省体积。
+# （compose 的 healthcheck 用的是 node 自带的 fetch，不依赖 npm。）
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+             /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
+
 WORKDIR /app
 
-COPY --from=build /app/node_modules ./node_modules
-COPY --from=build /app/package.json ./package.json
-COPY --from=build /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
-COPY --from=build /app/packages/shared ./packages/shared
-COPY --from=build /app/apps/api ./apps/api
+# 依赖：来自只装生产依赖的 prod-deps 阶段
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY --from=prod-deps /app/package.json ./package.json
+COPY --from=prod-deps /app/pnpm-workspace.yaml ./pnpm-workspace.yaml
+COPY --from=prod-deps /app/apps/api/package.json ./apps/api/package.json
+COPY --from=prod-deps /app/apps/api/node_modules ./apps/api/node_modules
+# packages/shared 被 tsup 标为 external（见 apps/api/tsup.config.ts），运行时要按包名解析到它的
+# dist，所以 package.json（type 与入口）与 dist 都必须在场；src 与它自己的 devDeps 不必带。
+COPY --from=prod-deps /app/packages/shared/package.json ./packages/shared/package.json
+COPY --from=prod-deps /app/packages/shared/node_modules ./packages/shared/node_modules
+
+# 编译产物
+COPY --from=build /app/packages/shared/dist ./packages/shared/dist
+COPY --from=build /app/apps/api/dist ./apps/api/dist
 
 # 数据卷挂载点（SQLite + 本地上传目录 + 临时目录）
 RUN mkdir -p /data/glimmer/uploads /data/glimmer/tmp

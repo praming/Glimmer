@@ -1,6 +1,9 @@
 # ---------- 构建阶段 ----------
 # 与 apps/api、本地 .nvmrc / engines 保持同一大版本（Node 22 = ABI 127）。
 # web 自身没有原生依赖，但 @glimmer/shared 是两边共用的，统一版本可避免"本地能跑、镜像不能跑"。
+#
+# 构建阶段留在 bookworm（glibc）上：Nuxt / Vite / Tailwind 的工具链在这里跑，
+# 不折腾它。运行阶段才换成体积小得多的 alpine —— 那部分是纯 JS 产物，见下方说明。
 FROM node:22-bookworm-slim AS build
 
 ENV PNPM_HOME=/pnpm
@@ -44,11 +47,23 @@ RUN pnpm --filter @glimmer/shared build \
     && pnpm --filter @glimmer/web build
 
 # ---------- 运行阶段 ----------
-FROM node:22-bookworm-slim AS runner
+# 用 alpine 而不是 bookworm-slim：本阶段只跑 `node .output/server/index.mjs`，
+# 而 Nitro 的 node-server 产物里 `.output/server/node_modules` 全是**纯 JS** 包
+# （vue / @babel/parser / devalue / entities / estree-walker / hookable /
+#  source-map-js / ufo / unhead / vue-bundle-renderer），没有任何原生模块，
+# 因此不依赖 glibc，换 musl 的 alpine 没有 ABI 风险，体积却小一大截。
+FROM node:22-alpine AS runner
 
 ENV NODE_ENV=production
 ENV NITRO_HOST=0.0.0.0
 ENV NITRO_PORT=3001
+
+# 运行期只用 `node`，npm / corepack 用不到，删掉省体积。
+# 保留 ca-certificates：Nitro 可能向外发起 HTTPS（例如自定义错误上报）。
+RUN apk add --no-cache ca-certificates \
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    && rm -f /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+             /usr/local/bin/pnpm /usr/local/bin/pnpx /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 WORKDIR /app
 

@@ -119,3 +119,92 @@ jobs:
             ${{ secrets.DOCKERHUB_USERNAME || 'glimmer-local' }}/glimmer-${{ matrix.service }}:latest
           cache-from: type=gha,scope=${{ matrix.service }}
           cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+  # ---------------------------------------------------------------------------
+  # 冒烟：把刚发布的镜像真的拉下来跑起来探活。
+  #
+  # 「能构建 + 能推送」不等于「能启动」。换基础镜像（例如 web 用 musl 的 alpine）、
+  # 裁剪运行时依赖这类改动，只有容器真的起来并响应过才算验证过 —— 否则问题会一路
+  # 潜伏到用户 `docker compose up` 的那一刻。这里顺带打印镜像体积，便于追踪瘦身效果。
+  #
+  # 仅在「确实推送了镜像」时运行：只构建不推送的验证运行（push=false）会跳过，
+  # 否则会去拉上一次发布的 latest，验的是旧镜像，结论具有误导性。
+  # ---------------------------------------------------------------------------
+  smoke:
+    needs: publish
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.push != 'false' }}
+    runs-on: ubuntu-latest
+    env:
+      DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+    steps:
+      - name: 拉取刚发布的镜像
+        run: |
+          docker pull "$DH_USER/glimmer-api:latest"
+          docker pull "$DH_USER/glimmer-web:latest"
+
+      - name: 报告镜像体积
+        run: |
+          {
+            echo "### 镜像体积（未压缩）"
+            echo ""
+            echo "| 镜像 | 体积 |"
+            echo "| --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for svc in api web; do
+            size=$(docker image inspect --format '{{.Size}}' "$DH_USER/glimmer-$svc:latest")
+            mb=$(( size / 1048576 ))
+            echo "glimmer-$svc: ${mb} MB（${size} 字节）"
+            echo "| glimmer-$svc:latest | ${mb} MB |" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+      - name: 启动 API 并探活
+        run: |
+          set -e
+          docker run -d --name smoke-api -p 3000:3000 \
+            -e SESSION_SECRET=smoke-test-session-secret-0123456789 \
+            -e ENCRYPTION_KEY=smoke-test-encryption-key-0123456789 \
+            -e ADMIN_PASSWORD=smoke-test-password \
+            -e COOKIE_SECURE=false \
+            -e PUBLIC_BASE_URL=http://127.0.0.1:3000 \
+            "$DH_USER/glimmer-api:latest"
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/api/health; then
+              echo
+              echo "API 健康检查通过（第 ${i} 次尝试）"
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke-api)" != "true" ]; then
+              echo "::error::API 容器已退出"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "::error::API 未在 60 秒内通过健康检查"
+          exit 1
+
+      - name: 启动 Web 并确认 HTTP 有响应
+        run: |
+          set -e
+          docker run -d --name smoke-web -p 3001:3001 -e NODE_ENV=production "$DH_USER/glimmer-web:latest"
+          for i in $(seq 1 30); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 5 http://127.0.0.1:3001/ || true)
+            if [ -n "$code" ] && [ "$code" != "000" ]; then
+              echo "Web 已响应 HTTP $code（第 ${i} 次尝试）"
+              exit 0
+            fi
+            if [ "$(docker inspect -f '{{.State.Running}}' smoke-web)" != "true" ]; then
+              echo "::error::Web 容器已退出"
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "::error::Web 未在 60 秒内响应"
+          exit 1
+
+      - name: 失败时输出容器日志
+        if: failure()
+        run: |
+          for c in smoke-api smoke-web; do
+            echo "========== $c =========="
+            docker logs "$c" 2>&1 | tail -80 || true
+          done
