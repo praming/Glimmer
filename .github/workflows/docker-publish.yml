@@ -172,9 +172,9 @@ jobs:
       - name: 启动 API 并探活
         run: |
           set -e
+          # 刻意**不**注入 ENCRYPTION_KEY：走「首次启动自动生成并落盘」这条真实路径，
+          # 并在下面断言日志里确实出现了生成提示。
           docker run -d --name smoke-api -p 3000:3000 \
-            -e SESSION_SECRET=smoke-test-session-secret-0123456789 \
-            -e ENCRYPTION_KEY=smoke-test-encryption-key-0123456789 \
             -e ADMIN_PASSWORD=smoke-test-password \
             -e COOKIE_SECURE=false \
             -e PUBLIC_BASE_URL=http://127.0.0.1:3000 \
@@ -183,6 +183,13 @@ jobs:
             if curl -fsS http://127.0.0.1:3000/api/health; then
               echo
               echo "API 健康检查通过（第 ${i} 次尝试）"
+              if docker logs smoke-api 2>&1 | grep -q "已自动生成并保存到"; then
+                echo "ENCRYPTION_KEY 自动生成并落盘：已验证"
+              else
+                echo "::error::日志里没有出现密钥自动生成的提示，落盘逻辑可能未生效"
+                docker logs smoke-api
+                exit 1
+              fi
               exit 0
             fi
             if [ "$(docker inspect -f '{{.State.Running}}' smoke-api)" != "true" ]; then

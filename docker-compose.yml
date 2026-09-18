@@ -24,10 +24,17 @@ services:
     build:
       context: .
       dockerfile: apps/api/Dockerfile
-    image: ${IMAGE_PREFIX:-}glimmer-api:${IMAGE_TAG:-latest}
+    # 镜像来源：默认拉取官方镜像（由 GitHub Actions 自动发布）。
+    # 本服务同时声明了 build 与 image 且未写 pull_policy，此时 Compose 的规则是
+    # 「先尝试 pull，拉不到才回退本地构建」，所以保留 build 段不影响拉取，
+    # 又能在离线或改过源码时用 `docker compose up -d --build` 顶上。
+    image: ${IMAGE_PREFIX:-praming/}glimmer-api:${IMAGE_TAG:-latest}
     container_name: glimmer-api
+    # .env 是**可选**的：不存在时静默跳过（长语法 + required: false 需 Compose >= 2.24）。
+    # 所有配置都有可用默认值，所以不建 .env 也能直接 `docker compose up -d`。
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       - NODE_ENV=production
       - PORT=3000
@@ -58,7 +65,7 @@ services:
       dockerfile: apps/web/Dockerfile
       args:
         - NUXT_PUBLIC_API_BASE=/api
-    image: ${IMAGE_PREFIX:-}glimmer-web:${IMAGE_TAG:-latest}
+    image: ${IMAGE_PREFIX:-praming/}glimmer-web:${IMAGE_TAG:-latest}
     container_name: glimmer-web
     environment:
       - NODE_ENV=production

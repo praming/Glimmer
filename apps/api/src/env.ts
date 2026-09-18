@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomBytes } from 'node:crypto'
 import { config as loadDotenv } from 'dotenv'
 import { z } from 'zod'
 
@@ -27,6 +28,84 @@ loadEnvFiles()
 
 const RAW_NODE_ENV = process.env.NODE_ENV ?? 'development'
 
+/* ------------------------------------------------------------------ */
+/* 加密密钥：未提供时自动生成并落盘                                       */
+/* ------------------------------------------------------------------ */
+
+/** 密钥文件与 SQLite 数据库同目录 —— 备份数据目录即可把密钥一起带走 */
+function resolveDataDir(): string {
+  const raw = process.env.DATABASE_URL ?? './data/glimmer.db'
+  const abs = path.isAbsolute(raw) ? raw : path.resolve(process.cwd(), raw)
+  return path.dirname(abs)
+}
+
+const SECRETS_FILE_NAME = '.secrets.json'
+
+function readPersistedKey(file: string): string | null {
+  try {
+    if (!fs.existsSync(file)) return null
+    const parsed: unknown = JSON.parse(fs.readFileSync(file, 'utf8'))
+    const key = (parsed as { encryptionKey?: unknown } | null)?.encryptionKey
+    return typeof key === 'string' && key.length >= 8 ? key : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 确保 `process.env.ENCRYPTION_KEY` 有值，没有就现场生成一个并持久化。
+ *
+ * ⚠️ 必须在 EnvSchema 解析**之前**执行：`lib/crypto.ts` 是在**模块顶层**读取
+ * `env.ENCRYPTION_KEY` 的，若把这段逻辑放到启动脚本里后置处理，加密模块拿到的
+ * 仍是解析前的旧值。
+ *
+ * 为什么必须落盘：该密钥用于解密后台保存的存储后端凭据（S3 的 secretAccessKey、
+ * WebDAV 的 password）。若每次启动都换新值，这些凭据将永久解不回来。
+ *
+ * 优先级：环境变量（含 .env） > 已落盘的文件 > 现场生成。
+ * 想自行管理密钥就设置 `ENCRYPTION_KEY` 环境变量，其优先级最高。
+ */
+function ensureEncryptionKey(): void {
+  if (process.env.ENCRYPTION_KEY) return
+
+  // 测试环境用固定值且不落盘：既不污染工作目录，结果也可复现
+  if (RAW_NODE_ENV === 'test') {
+    process.env.ENCRYPTION_KEY = 'glimmer-test-encryption-key-0123456789'
+    return
+  }
+
+  const dir = resolveDataDir()
+  const file = path.join(dir, SECRETS_FILE_NAME)
+
+  const persisted = readPersistedKey(file)
+  if (persisted) {
+    process.env.ENCRYPTION_KEY = persisted
+    return
+  }
+
+  const key = randomBytes(32).toString('base64url')
+  try {
+    fs.mkdirSync(dir, { recursive: true })
+    fs.writeFileSync(file, `${JSON.stringify({ encryptionKey: key }, null, 2)}\n`, { mode: 0o600 })
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[glimmer] 未设置 ENCRYPTION_KEY，已自动生成并保存到：\n' +
+        `    ${file}\n` +
+        '  该文件用于解密后台保存的存储后端凭据（S3 / WebDAV），请随数据目录一起备份；\n' +
+        '  删除它会导致这些凭据无法解密，届时需重新填写。',
+    )
+  } catch (err) {
+    // 落盘失败不阻断启动，但必须显式告警：本次进程内的密钥重启后就没了
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[glimmer] 无法写入密钥文件 ${file}，本次启动改用临时密钥（重启后失效）：${String(err)}`,
+    )
+  }
+  process.env.ENCRYPTION_KEY = key
+}
+
+ensureEncryptionKey()
+
 /** `1/true/yes/on` 视为 true */
 const boolish = (fallback: boolean) =>
   z.preprocess((v) => {
@@ -44,8 +123,14 @@ const EnvSchema = z.object({
   LOCAL_STORAGE_DIR: z.string().default('./data/uploads'),
   TEMP_DIR: z.string().default('./data/tmp'),
 
-  SESSION_SECRET: z.string().min(8).default('glimmer-dev-session-secret-please-change'),
-  ENCRYPTION_KEY: z.string().min(8).default('glimmer-dev-encryption-key-please-change'),
+  /**
+   * 敏感配置加密主密钥（AES-256-GCM，见 lib/crypto.ts）。
+   *
+   * 无需手工配置：未提供时会自动生成并落盘（见上方 `ensureEncryptionKey()`）。
+   * 这里刻意**不给默认值** —— 一旦有人塞进一个公开的固定兜底值，加密就形同虚设，
+   * 宁可让配置错误在启动时显式报出来。
+   */
+  ENCRYPTION_KEY: z.string().min(8),
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(7),
   SESSION_COOKIE_NAME: z.string().min(1).default('glimmer_session'),
   COOKIE_SECURE: boolish(RAW_NODE_ENV === 'production'),
@@ -74,6 +159,15 @@ const EnvSchema = z.object({
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().min(1).max(500).default(20),
   QUEUE_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
 })
+
+/*
+ * 关于 `SESSION_SECRET`：本项目**没有**这个配置项。
+ *
+ * 会话 cookie 里放的是 32 字节随机 token，数据库只存它的 SHA-256 哈希
+ * （见 lib/session.ts），校验靠「算哈希查表」而非 HMAC 签名，因此不存在
+ * 「签名密钥」这一环。历史上曾有一个同名环境变量，但它没有任何调用点，
+ * 已删除 —— 若你的 .env 里还留着它，删除即可，留着也会被忽略。
+ */
 
 const parsed = EnvSchema.safeParse(process.env)
 
@@ -113,7 +207,6 @@ export function ensureRuntimeDirs(): void {
 /** 生产环境下的弱密钥告警（不阻断启动） */
 export function warnWeakSecrets(): void {
   const weak: string[] = []
-  if (env.SESSION_SECRET.length < 24) weak.push('SESSION_SECRET 过短（建议 >= 32 字符）')
   if (env.ENCRYPTION_KEY.length < 24) weak.push('ENCRYPTION_KEY 过短（建议 >= 32 字符）')
   if (env.ADMIN_PASSWORD === 'change-me') weak.push('ADMIN_PASSWORD 仍为默认值 change-me')
   if (weak.length > 0) {

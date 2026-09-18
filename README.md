@@ -108,7 +108,7 @@ curl -fsSL https://get.docker.com | sh
 
 ### 1. 下载部署文件
 
-一共只需要两个文件：`docker-compose.yml`（告诉 Docker 怎么跑）和 `.env`（你的配置）。
+**只需要一个文件**：`docker-compose.yml`。不需要创建 `.env` —— 所有配置都有可用默认值。
 
 **有 git：**
 
@@ -117,57 +117,39 @@ git clone https://github.com/praming/Glimmer.git
 cd Glimmer
 ```
 
-**没有 git** —— 直接下这两个文件就行，不必克隆整个仓库：
+**没有 git** —— 直接下这一个文件就行，不必克隆整个仓库：
 
 ```bash
 mkdir glimmer && cd glimmer
 curl -fsSLO https://raw.githubusercontent.com/praming/Glimmer/main/docker-compose.yml
-curl -fsSL  https://raw.githubusercontent.com/praming/Glimmer/main/.env.example -o .env.example
 ```
 
-### 2. 配置（**这一步别跳过**）
+> 只有想改默认值（端口、域名等）时才需要 `.env`，见 [第 4 步](#4-可选自定义配置)。
 
-```bash
-cp .env.example .env
-```
-
-**第一步，生成两个随机密钥。** 不换的话，任何人都能用公开的默认值伪造登录状态：
-
-```bash
-sed -i "s|^SESSION_SECRET=.*|SESSION_SECRET=$(openssl rand -hex 32)|; \
-        s|^ENCRYPTION_KEY=.*|ENCRYPTION_KEY=$(openssl rand -hex 32)|" .env
-```
-
-> macOS 上 `sed` 要写成 `sed -i '' "..."` 的形式。
-> 没有 `openssl` 也无妨：随便找个在线随机字符串生成器，生成两串 **32 位以上**的随机字符，
-> 手工填到 `SESSION_SECRET=` 和 `ENCRYPTION_KEY=` 后面。
-
-**第二步，打开 `.env` 改这四项**（`vi .env` / `nano .env`，下载到本地用记事本改也一样）：
-
-| 变量              | 改成                       | 不改会怎样                                          |
-| ----------------- | -------------------------- | --------------------------------------------------- |
-| `ADMIN_PASSWORD`  | 你自己的登录密码            | 默认是 `change-me`，等于没设密码                     |
-| `PUBLIC_BASE_URL` | `http://你的服务器IP:3001`  | 复制出去的图片直链**别人打不开**                     |
-| `COOKIE_SECURE`   | 用 `http://` 访问就填 `false` | **密码明明对，却一直登录不上**（登录 Cookie 被浏览器丢弃） |
-| `WEB_PORT`        | 想直接 `http://IP` 访问就填 `80` | 默认 3001，网址要带端口号                       |
-
-其他变量保持默认即可，跑通之后再按需调整（完整清单见 [配置](#配置)）。
-
-### 3. 启动
+### 2. 启动
 
 ```bash
 docker compose up -d
 ```
 
-就这一条。看到 `Started` 就成功了。
+就这一条，**不需要先做任何配置**。看到 `Started` 就成功了。
 
-> 若提示 `pull access denied`、`manifest unknown` 或一直卡在拉取（镜像可能尚未发布，
-> 或 Docker Hub 仓库是私有的），改用**从源码构建**，效果完全一样，只是首次要多等几分钟：
+首次启动会自动完成三件事：
+
+| 事项         | 说明                                                                   |
+| ------------ | ---------------------------------------------------------------------- |
+| 拉取镜像     | 优先从 Docker Hub 拉官方镜像；拉不到（离线 / 镜像缺失）自动回退为本地构建 |
+| 生成加密密钥 | 自动生成并保存到数据目录的 `.secrets.json`                               |
+| 创建管理员   | 账号 `admin`、密码 `change-me` —— **登录后请立刻改掉**                   |
+
+> ⚠️ `.secrets.json` 用来解密你在后台填写的 S3 / WebDAV 凭据。它就在 `glimmer-data/` 里，
+> **备份数据目录时请一并带上**；删掉它，那些凭据就再也解不回来。
+> 想自己管理密钥（例如多台机器共用一份数据），在 `.env` 里显式设置 `ENCRYPTION_KEY` 即可，它优先级更高。
 >
-> ```bash
-> docker compose up -d --build
-> ```
->
+> 本编排把 `.env` 声明为**可选文件**（`env_file` 长语法），需要 **Docker Compose ≥ 2.24**
+> （`docker compose version` 可查）。更老的版本会报解析错误，升级 compose 即可。
+
+> 想**强制**用本地源码构建（例如自行改过代码），加上 `--build`：`docker compose up -d --build`。
 > 首次构建会在容器内编译原生模块，视机器性能约 **3–10 分钟**（NAS 上更久），期间没有任何输出是正常的。
 
 看看跑起来没有：
@@ -177,16 +159,39 @@ docker compose ps        # glimmer-api 与 glimmer-web 都应是 running（api �
 docker compose logs -f   # 跟踪日志；按 Ctrl+C 退出，不会停服务
 ```
 
-### 4. 打开浏览器
+### 3. 打开浏览器
 
-访问 `http://你的服务器IP:3001`（若把 `WEB_PORT` 改成了 `80`，直接访问 `http://你的服务器IP`），
-用 `.env` 里的 `ADMIN_USERNAME` / `ADMIN_PASSWORD` 登录。
+访问 `http://你的服务器IP:3001`，用 **`admin` / `change-me`** 登录
+（若在 `.env` 里把 `WEB_PORT` 改成了 `80`，则直接访问 `http://你的服务器IP`）。
 
 登进去后建议顺手做三件事：
 
 1. 到**「个人资料」把密码改掉** —— `ADMIN_PASSWORD` 只在**首次初始化**时生效，之后改 `.env` 不会同步；
 2. 到**「设置 → 存储后端」**确认默认的本地存储可用；需要接 S3 / WebDAV 也在这里配；
 3. 到**「设置 → 命名与域名」**把直链域名核成你的实际地址（它决定复制出来的图片链接长什么样）。
+
+### 4. （可选）自定义配置
+
+想改端口、域名这些，再建一个 `.env`（可以只写你要覆盖的那几行）：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/praming/Glimmer/main/.env.example -o .env.example
+cp .env.example .env
+```
+
+改完执行 `docker compose up -d` 重启生效。**最常改的几项**：
+
+| 变量              | 改成                       | 不改会怎样                                          |
+| ----------------- | -------------------------- | --------------------------------------------------- |
+| `ADMIN_PASSWORD`  | 你自己的登录密码            | 默认 `change-me`，**谁都能登进来**                   |
+| `PUBLIC_BASE_URL` | `http://你的服务器IP:3001`  | 复制出去的图片直链**别人打不开**                     |
+| `COOKIE_SECURE`   | 用 `http://` 访问就填 `false` | **密码明明对，却一直登录不上**（登录 Cookie 被浏览器丢弃） |
+| `WEB_PORT`        | 想直接 `http://IP` 访问就填 `80` | 默认 3001，网址要带端口号                       |
+
+完整清单见 [配置](#配置)。
+
+> `ADMIN_PASSWORD` 只在 `users` 表为空时生效。账号一旦创建，改 `.env` 不会同步密码 ——
+> 请登录后到**「个人资料」**修改。
 
 ### 这两个容器分别在做什么
 
@@ -250,7 +255,6 @@ docker run -d --name glimmer-api --network glimmer-net --restart unless-stopped 
   -e DATABASE_URL=/data/glimmer/glimmer.db \
   -e LOCAL_STORAGE_DIR=/data/glimmer/uploads \
   -e TEMP_DIR=/data/glimmer/tmp \
-  -e SESSION_SECRET=换成随机串 -e ENCRYPTION_KEY=换成随机串 \
   -e ADMIN_USERNAME=admin -e ADMIN_PASSWORD=换成你的密码 \
   -e PUBLIC_BASE_URL=http://你的IP:3001 -e COOKIE_SECURE=false \
   praming/glimmer-api:latest
@@ -271,6 +275,9 @@ docker run -d --name glimmer-web --network glimmer-net --restart unless-stopped 
 > 也是登录限流能正确识别访客 IP 的前提。所以跑 `docker run` 时请**不要**给它加 `-p 3000:3000`。
 >
 > 想换成自己构建的镜像，把 `praming/` 前缀去掉（本地构建的 tag 就叫 `glimmer-api:latest`）。
+>
+> 上面没有传 `ENCRYPTION_KEY`：它会自动生成到 `glimmer-data/.secrets.json`，也就是 `-v` 挂载的那个目录。
+> 想自己指定就加 `-e ENCRYPTION_KEY=你的随机串`。
 
 ### 可选：已经有 1Panel / 宝塔面板
 
@@ -336,7 +343,7 @@ rm -rf glimmer-data
 node -v && pnpm -v      # 需要 Node 18/20/22/23 + pnpm 9
 
 pnpm install
-cp .env.example .env    # 至少修改 SESSION_SECRET / ENCRYPTION_KEY / ADMIN_PASSWORD
+cp .env.example .env    # 可选：密钥会自动生成，本地开发一般只需改 ADMIN_PASSWORD
 pnpm db:migrate         # 建库 + 创建管理员（幂等，可重复执行）
 pnpm dev                # 同时启动 API(3000) 与 Web(3001)
 ```
@@ -408,15 +415,14 @@ Nginx 用的是官方 `nginx:alpine` 镜像，**不占用本项目的镜像标�
 
 ## 配置
 
-所有配置都通过环境变量，完整清单与注释见 [`.env.example`](.env.example)。关键项：
+所有配置都通过环境变量，**每一项都有可用默认值**，不建 `.env` 也能跑。完整清单与注释见 [`.env.example`](.env.example)。关键项：
 
 | 变量                              | 默认                      | 说明                                                                 |
 | --------------------------------- | ------------------------- | -------------------------------------------------------------------- |
 | `DATABASE_URL`                    | `./data/glimmer.db`       | SQLite 文件路径（容器内建议 `/data/glimmer/glimmer.db`）               |
 | `LOCAL_STORAGE_DIR`               | `./data/uploads`          | 本地存储后端根目录                                                     |
 | `TEMP_DIR`                        | `./data/tmp`              | 上传临时目录（处理完成后自动清理）                                      |
-| `SESSION_SECRET`                  | —                         | 会话签名/派生密钥，**≥ 32 字符，务必修改**                              |
-| `ENCRYPTION_KEY`                  | —                         | 敏感配置加密主密钥（AES-256-GCM），**≥ 32 字符，务必修改**               |
+| `ENCRYPTION_KEY`                  | 自动生成                  | 加密存储后端凭据（S3 Secret Key / WebDAV 密码）的主密钥。**留空即首次启动自动生成**并存到 `glimmer-data/.secrets.json`，请随数据一起备份 |
 | `ADMIN_USERNAME`                  | `admin`                   | 首次启动创建的管理员用户名                                              |
 | `ADMIN_PASSWORD`                  | `change-me`               | 首次启动创建的管理员密码，**务必修改**                                  |
 | `SESSION_TTL_DAYS`                | `7`                       | 默认会话有效期（天）；用户可在个人资料里单独覆盖                          |
