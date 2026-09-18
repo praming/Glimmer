@@ -16,8 +16,19 @@ export interface LocalAdapterOptions {
   name: string
   /** 存储根目录，留空使用 env LOCAL_STORAGE_DIR */
   directory?: string
-  /** 对外基地址；留空回落到 `{PUBLIC_BASE_URL}/files` */
+  /**
+   * 该后端的对外访问前缀，**原样使用**（不补任何路径）。
+   * 想用默认的 `/files` 路由就自己写全：`https://pic.example.com/files`。
+   */
   publicBaseUrl?: string
+  /**
+   * 全局「自定义域名」（后台设置），本后端的 publicBaseUrl 留空时用它。
+   *
+   * 注意与 publicBaseUrl 的区别：这里传的是**裸域名/根地址**（不含 `/files`），
+   * 由适配器自己补 `/files` —— 因为本地文件是由 API 的 `/files/*` 路由提供的，
+   * 而那个后缀不该逼用户手写。两者都为空时才回落到 env `PUBLIC_BASE_URL`。
+   */
+  globalBaseUrl?: string
   /** 对象键前缀 */
   pathPrefix?: string
 }
@@ -43,7 +54,10 @@ export class LocalStorageAdapter extends BaseStorageAdapter implements StorageAd
     this.pathPrefix = (options.pathPrefix ?? '').replace(/^\/+|\/+$/g, '')
     this.baseUrl = options.publicBaseUrl?.trim()
       ? options.publicBaseUrl.trim().replace(/\/+$/, '')
-      : `${env.PUBLIC_BASE_URL.replace(/\/+$/, '')}/files`
+      : joinUrl(
+          (options.globalBaseUrl?.trim() || env.PUBLIC_BASE_URL).replace(/\/+$/, ''),
+          'files',
+        )
   }
 
   /** 存储根目录（供静态服务路由使用） */

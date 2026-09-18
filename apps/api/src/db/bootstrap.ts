@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { env, ensureRuntimeDirs, paths } from '../env'
+import { DEFAULT_PUBLIC_BASE_URL, env, ensureRuntimeDirs, paths } from '../env'
 import { hashPassword } from '../lib/crypto'
 import { DEFAULT_GLOBAL_SETTINGS, normalizeGlobalSettings } from '@glimmer/shared'
 import { sqlite } from './index'
@@ -213,6 +213,42 @@ export interface BootstrapResult {
 }
 
 /**
+ * 迁移（v1.0.2）：清掉早期 bootstrap 写进库的「假显式域名」。
+ *
+ * 老版本首次初始化时会把 `env.PUBLIC_BASE_URL` 一并写入设置行；没人配置过时，写进去的
+ * 就是内置默认值 `http://localhost:3000`。当时直链生成只读 env，这个库里的值从未生效；
+ * 但从 v1.0.2 起全局值成了直链的第二优先级（后端级 > 全局 > env），若不清理，它会把
+ * env 里真正配好的地址压住 —— 表现为「按文档设了 PUBLIC_BASE_URL 的服务器，升级后
+ * 直链突然全部变回 localhost」。
+ *
+ * 只处理**恰好等于内置默认值**的情况：
+ *   - 真实部署不会把对外域名设成 `localhost:3000`；
+ *   - 真在 env 里显式写了同一个值的人，清空后照样回落到 env，结果完全一致 —— 无副作用。
+ *
+ * 只改 `publicBaseUrl` 一个字段再原样写回：设置行里躺着已加密的 S3/WebDAV 密钥，
+ * 这里既不解读也不重排，避免把凭据搅坏。
+ */
+function clearPinnedDefaultPublicBaseUrl(raw: string): void {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = JSON.parse(raw) as Record<string, unknown>
+  } catch {
+    return // 坏数据不在启动期硬修，上层会按默认值兜底
+  }
+  if (parsed.publicBaseUrl !== DEFAULT_PUBLIC_BASE_URL) return
+
+  parsed.publicBaseUrl = ''
+  sqlite
+    .prepare(`UPDATE settings SET value = ?, updated_at = ? WHERE key = ?`)
+    .run(JSON.stringify(parsed), new Date().toISOString(), 'global')
+
+  console.log(
+    `[glimmer] 已清理设置里被写死的默认对外地址 ${DEFAULT_PUBLIC_BASE_URL}：` +
+      '它此前从未生效，留着会盖住 PUBLIC_BASE_URL 与后台「自定义域名」。',
+  )
+}
+
+/**
  * 建表 + 写入默认设置 + 首次启动创建管理员账号。
  * 整个过程幂等，可安全地在每次启动时调用。
  */
@@ -235,14 +271,19 @@ export async function bootstrap(): Promise<BootstrapResult> {
     | undefined
 
   if (!existing) {
+    // 刻意**不再**把 env.PUBLIC_BASE_URL 写进初始设置（v1.0.2 起）：写进去等于把
+    // 「当时的默认值」固化成一条显式配置，之后再改 env 就不再生效 —— 直链一度因此
+    // 全部指向 http://localhost:3000（见 clearPinnedDefaultPublicBaseUrl 的说明）。
+    // 留空才能继续让 env 起默认值的作用。
     const initial = normalizeGlobalSettings({
       ...DEFAULT_GLOBAL_SETTINGS,
-      publicBaseUrl: env.PUBLIC_BASE_URL,
       maxUploadSizeMb: env.MAX_UPLOAD_SIZE_MB,
     })
     sqlite
       .prepare(`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)`)
       .run('global', JSON.stringify(initial), new Date().toISOString())
+  } else {
+    clearPinnedDefaultPublicBaseUrl(existing.value)
   }
 
   // 首次启动创建管理员

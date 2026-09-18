@@ -102,7 +102,7 @@ settingsRoutes.post('/backends/test', requireAdmin, async (c) => {
 
   const started = Date.now()
   try {
-    const adapter = createAdapter(config)
+    const adapter = createAdapter(config, getGlobalSettings().publicBaseUrl)
     await adapter.test()
     return ok(c, {
       ok: true,

@@ -237,7 +237,12 @@ async function saveAll(): Promise<void> {
           <AppInput
             v-model="draft.publicBaseUrl"
             label="访问域名（publicBaseUrl）"
-            placeholder="留空则使用全局域名"
+            :placeholder="draft.type === 'local' ? '如 https://pic.example.com/files' : '如 https://cdn.example.com'"
+            :hint="
+              draft.type === 'local'
+                ? '原样使用（不会自动补路径）—— 用默认 /files 路由就写全：https://pic.example.com/files。留空则依次回落到「自定义域名」「PUBLIC_BASE_URL」，那两层会自动补 /files'
+                : '该后端的对外前缀，留空则由服务地址推导'
+            "
           />
           <AppInput v-model="draft.pathPrefix" label="路径前缀" placeholder="如 images/2026" />
         </div>

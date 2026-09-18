@@ -1,6 +1,6 @@
 {
   "name": "glimmer-image-hosting",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "license": "AGPL-3.0-or-later",
   "private": true,
   "description": "浮光图床 / Glimmer — 轻量团队图床系统",

@@ -173,7 +173,7 @@ docker compose logs -f   # 跟踪日志；按 Ctrl+C 退出，不会停服务
 
 1. 到**「个人资料」把密码改掉** —— `ADMIN_PASSWORD` 只在**首次初始化**时生效，之后改 `.env` 不会同步；
 2. 到**「设置 → 存储后端」**确认默认的本地存储可用；需要接 S3 / WebDAV 也在这里配；
-3. 到**「设置 → 命名与域名」**把直链域名核成你的实际地址（它决定复制出来的图片链接长什么样）。
+3. 到**「设置 → 存储后端」**把该后端的**「访问域名」**填成 `https://你的域名/files`（本地存储**原样使用**这个值，`/files` 要自己写全）—— 它决定复制出来的图片直链长什么样。
 
 ### 4. （可选）自定义配置
 
@@ -189,7 +189,7 @@ cp .env.example .env
 | 变量              | 改成                       | 不改会怎样                                          |
 | ----------------- | -------------------------- | --------------------------------------------------- |
 | `ADMIN_PASSWORD`  | 你自己的登录密码            | 默认 `change-me`，**谁都能登进来**                   |
-| `PUBLIC_BASE_URL` | `http://你的服务器IP:3001`  | 复制出去的图片直链**别人打不开**                     |
+| `PUBLIC_BASE_URL` | `http://你的服务器IP:3001`  | 复制出去的图片直链**别人打不开**（也可在「存储后端 → 访问域名」里单独指定，优先级更高） |
 | `COOKIE_SECURE`   | 用 `http://` 访问就填 `false` | **密码明明对，却一直登录不上**（登录 Cookie 被浏览器丢弃） |
 | `WEB_PORT`        | 想直接 `http://IP` 访问就填 `80` | 默认 3001，网址要带端口号                       |
 
@@ -246,6 +246,19 @@ docker compose up -d                     # 去掉 Nginx（compose 会移除多�
 
 **启用 HTTPS：** 把证书放到 `./certs/fullchain.pem` 与 `./certs/privkey.pem`，
 取消 `nginx.conf` 末尾 443 段的注释，并把 `.env` 里的 `COOKIE_SECURE` 改回 `true`。
+
+### 对外地址（图片直链域名）
+
+复制出来的直链形如 `{对外地址}/files/{路径}`（本地存储）。**这个「对外地址」按下面的顺序取第一个有值的**：
+
+1. **「设置 → 存储后端」**里该后端的**「访问域名」**（**原样使用**：本地存储要**自己写全** `https://你的域名/files`；S3 / WebDAV 填 CDN 地址）；
+2. **「设置 → 命名与域名」**里的**自定义域名**（全局兜底；它是**根地址**，本地存储会**自动补 `/files`**）；
+3. 环境变量 `PUBLIC_BASE_URL`（本地存储同样补 `/files`）。
+
+所以最省事的做法是**在「存储后端」里把访问域名填成 `https://你的域名/files`** —— 不用改 `.env`，也不用重启容器，保存即生效。
+
+> ⚠️ 直链是**写入时的快照**：改配置只影响之后新上传的图片，老图片的记录不会自动变。
+> 换域名后要重写历史直链，见「常见问题 → 换域名后，历史图片直链还是旧地址？」里的 `rebuild-urls` 命令。
 
 ### 可选：不用 Compose，用 `docker run`
 
@@ -436,7 +449,7 @@ Nginx 用的是官方 `nginx:alpine` 镜像，**不占用本项目的镜像标�
 | `ADMIN_PASSWORD`                  | `change-me`               | 首次启动创建的管理员密码，**务必修改**                                  |
 | `SESSION_TTL_DAYS`                | `7`                       | 默认会话有效期（天）；用户可在个人资料里单独覆盖                          |
 | `COOKIE_SECURE`                   | 生产为 `true`             | 仅 HTTPS 下为 `true`；纯 HTTP 访问必须设为 `false`。**`.env.example` 已预设 `false`** |
-| `PUBLIC_BASE_URL`                 | `http://localhost:3000`   | 对外基地址，也是本地后端直链域名的默认值                                 |
+| `PUBLIC_BASE_URL`                 | `http://localhost:3000`   | 图片直链域名的**兜底值**（本地存储自动补 `/files`）。优先级：存储后端→访问域名 > 设置→命名与域名→自定义域名 > 本变量 |
 | `TRUST_PROXY`                     | 生产为 `true`             | 是否信任反代传来的 `X-Forwarded-For`。**API 端口直连公网时必须设为 `false`** |
 | `MAX_UPLOAD_SIZE_MB`              | `20`                      | 单文件大小上限                                                          |
 | `QUEUE_CONCURRENCY`               | `2`                       | 异步队列并发数                                                          |
@@ -652,7 +665,28 @@ docker exec glimmer-api node apps/api/dist/cli/reset-password.js admin '你的�
 多半是 `COOKIE_SECURE=true` 但通过 HTTP 访问。纯 HTTP（例如 `http://1.2.3.4`）请设为 `false`，配好 HTTPS 后再改回 `true`。
 
 **Q：本地后端图片 404？**
-直链形如 `{PUBLIC_BASE_URL}/files/{路径}`。检查 `.env` 的 `PUBLIC_BASE_URL` 是否指向 Nginx 对外地址，并确认数据目录已正确挂载。
+直链形如 `{对外地址}/files/{路径}`。先到**「设置 → 存储后端」**看该后端的**「访问域名」**是否指向你的实际地址（后端「访问域名」是**原样使用**、要自己写全 `/files`；它留空时才回落到「设置 → 命名与域名」的自定义域名、再到 `.env` 的 `PUBLIC_BASE_URL`，这两层会自动补 `/files`）；再确认数据目录已正确挂载。**域名填对了但老图片仍是旧地址**属于「快照」问题，见下一条。
+
+**Q：换域名后，历史图片直链还是旧地址？**
+
+`storage_records.url` 是**写入时的快照**，所以改域名只影响之后新上传的图片，老记录不会自动变。
+先把新域名配好（见 [对外地址（图片直链域名）](#对外地址图片直链域名)），再用自带命令一次性重写历史记录。
+**它默认是 dry-run，只打印不写库**：
+
+```bash
+# 1) 先预览会改哪些（不写库）
+docker exec glimmer-api node apps/api/dist/cli/rebuild-urls.js
+
+# 2) 确认无误后落库（SQLite 为 WAL 模式，无需停服）
+docker exec glimmer-api node apps/api/dist/cli/rebuild-urls.js --apply
+
+# 可选：只改某个后端、或限制条数
+docker exec glimmer-api node apps/api/dist/cli/rebuild-urls.js --backend <后端ID> --limit 100 --apply
+```
+
+各后端 ID 可在「设置 → 存储后端」的卡片上看到。命令会按**当前配置**重新计算每条记录应有的直链，只更新真正变化的。
+若「设置 → 命名与域名」里仍是写死的默认值 `http://localhost:3000`，它会**打印警告并跳过** ——
+此时请先改成你的实际域名（或重启一次 API，新版本会自动清理这个写死的默认值）。
 
 **Q：访问统计一直是 0？**
 见上方 [访问统计的覆盖范围](#-访问统计的覆盖范围重要)。若图片放在 S3/WebDAV，或线上由 Nginx 直服 `/files/`，

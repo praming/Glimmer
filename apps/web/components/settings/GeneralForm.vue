@@ -128,7 +128,7 @@ async function submit(): Promise<void> {
           label="自定义域名"
           mono
           placeholder="https://img.example.com"
-          hint="留空则使用环境变量 PUBLIC_BASE_URL"
+          hint="复制出来的图片直链用这个域名（这是根地址，本地存储会自动补 /files）。优先级低于「存储后端 → 访问域名」；留空则使用环境变量 PUBLIC_BASE_URL"
         />
 
         <AppInput

@@ -114,6 +114,15 @@ const boolish = (fallback: boolean) =>
     return ['1', 'true', 'yes', 'on'].includes(String(v).toLowerCase())
   }, z.boolean())
 
+/**
+ * `PUBLIC_BASE_URL` 的内置默认值。
+ *
+ * 单独导出是给 bootstrap 的迁移用的：早期版本会把「当时的 env 值」写进数据库，
+ * 没人配置时写进去的就是这个常量，迁移需要凭它区分「当年写进去的默认值」与
+ * 「管理员真的填了 localhost:3000」。详见 `db/bootstrap.ts`。
+ */
+export const DEFAULT_PUBLIC_BASE_URL = 'http://localhost:3000'
+
 const EnvSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -155,7 +164,7 @@ const EnvSchema = z.object({
   /** 限流窗口长度（秒） */
   AUTH_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).max(86400).default(900),
 
-  PUBLIC_BASE_URL: z.string().default('http://localhost:3000'),
+  PUBLIC_BASE_URL: z.string().default(DEFAULT_PUBLIC_BASE_URL),
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().min(1).max(500).default(20),
   QUEUE_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
 })

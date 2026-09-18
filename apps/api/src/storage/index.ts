@@ -5,6 +5,7 @@ import type {
   StorageBackend,
 } from '@glimmer/shared'
 import { existsCache, listCache } from './cache'
+import { env } from '../env'
 import { LocalStorageAdapter } from './local'
 import { S3StorageAdapter } from './s3'
 import type { FileInfo, StorageAdapter, StorageResult, UploadOptions } from './types'
@@ -97,12 +98,24 @@ interface RegistryEntry {
 
 const registry = new Map<string, RegistryEntry>()
 
-function signatureOf(config: BackendConfig): string {
-  // 配置未变则复用同一个 SDK 客户端
-  return JSON.stringify(config)
+function signatureOf(config: BackendConfig, globalBaseUrl: string): string {
+  // 配置未变则复用同一个 SDK 客户端。
+  // globalBaseUrl 必须进签名：本地后端的直链基地址依赖它（见 resolveBaseUrl），
+  // 不带上就会出现「后台改了域名、适配器却被当成同一个复用」的静默失效。
+  return `${globalBaseUrl}\u0000${JSON.stringify(config)}`
 }
 
-function buildAdapter(config: BackendConfig): StorageAdapter {
+/**
+ * 直链基地址的解析顺序：**后端级「访问域名」 > 全局「自定义域名」 > env `PUBLIC_BASE_URL`**。
+ *
+ * 全局值来自 `getGlobalSettings()`（后台改过就是库里的值，否则已被 env 填过），
+ * 所以这里只需处理「后端级为空」的情况。
+ */
+function resolveBaseUrl(config: BackendConfig, globalBaseUrl: string): string {
+  return config.publicBaseUrl?.trim() || globalBaseUrl.trim() || env.PUBLIC_BASE_URL
+}
+
+function buildAdapter(config: BackendConfig, globalBaseUrl: string): StorageAdapter {
   switch (config.type) {
     case 'local':
       return new LocalStorageAdapter({
@@ -110,6 +123,7 @@ function buildAdapter(config: BackendConfig): StorageAdapter {
         name: config.name,
         directory: config.directory,
         publicBaseUrl: config.publicBaseUrl,
+        globalBaseUrl: resolveBaseUrl(config, globalBaseUrl),
         pathPrefix: config.pathPrefix,
       })
     case 's3': {
@@ -152,19 +166,29 @@ function buildAdapter(config: BackendConfig): StorageAdapter {
 }
 
 /** 获取（并缓存）指定后端的适配器 */
-export function getAdapter(config: BackendConfig): StorageAdapter {
-  const signature = signatureOf(config)
+/**
+ * 取一个带缓存的适配器。
+ *
+ * `globalBaseUrl` 传全局「自定义域名」（`settings.publicBaseUrl`）；不传则按
+ * env `PUBLIC_BASE_URL` 处理（等价于 v1.0.1 之前的行为）。**新增调用点请务必传**，
+ * 否则「后台改域名」对该处不生效 —— 这正是 v1.0.1 之前直链全指向 localhost 的原因。
+ */
+export function getAdapter(config: BackendConfig, globalBaseUrl: string = env.PUBLIC_BASE_URL): StorageAdapter {
+  const signature = signatureOf(config, globalBaseUrl)
   const existing = registry.get(config.id)
   if (existing && existing.signature === signature) return existing.adapter
 
-  const adapter = new CachedStorageAdapter(buildAdapter(config))
+  const adapter = new CachedStorageAdapter(buildAdapter(config, globalBaseUrl))
   registry.set(config.id, { signature, adapter })
   return adapter
 }
 
 /** 构建一个不进入缓存、不包缓存的适配器实例（设置页「测试连接」使用） */
-export function createAdapter(config: BackendConfig): StorageAdapter {
-  return buildAdapter(config)
+export function createAdapter(
+  config: BackendConfig,
+  globalBaseUrl: string = env.PUBLIC_BASE_URL,
+): StorageAdapter {
+  return buildAdapter(config, globalBaseUrl)
 }
 
 export interface ResolvedAdapter {
@@ -191,7 +215,7 @@ export function resolveAdapters(
     if (!config) continue
     if (!config.enabled && !options.includeDisabled) continue
     seen.add(id)
-    out.push({ config, adapter: getAdapter(config) })
+    out.push({ config, adapter: getAdapter(config, settings.publicBaseUrl) })
   }
 
   return out
@@ -217,6 +241,7 @@ export function localAdapters(settings: GlobalSettings): LocalStorageAdapter[] {
           name: config.name,
           directory: config.directory,
           publicBaseUrl: config.publicBaseUrl,
+          globalBaseUrl: resolveBaseUrl(config, settings.publicBaseUrl),
           pathPrefix: config.pathPrefix,
         }),
     )
