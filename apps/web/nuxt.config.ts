@@ -1,3 +1,6 @@
+// 版本号唯一来源：仓库根 package.json
+import pkg from '../../package.json'
+
 export default defineNuxtConfig({
   compatibilityDate: '2025-01-01',
 
@@ -30,7 +33,7 @@ export default defineNuxtConfig({
     public: {
       apiBase: process.env.NUXT_PUBLIC_API_BASE || '/api',
       appName: '浮光 · Glimmer',
-      appVersion: '1.0.0',
+      appVersion: pkg.version,
     },
   },
 

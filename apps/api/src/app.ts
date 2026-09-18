@@ -15,6 +15,8 @@ import { statsRoutes } from './routes/stats'
 import { uploadRoutes } from './routes/upload'
 import { userRoutes } from './routes/users'
 import { getQueueStats } from './services/queue'
+// 版本号唯一来源：仓库根 package.json（esbuild 会内联，运行时不读文件）
+import pkg from '../../../package.json'
 
 export function createApp(): Hono<AppEnv> {
   /* ------------------------------ API 路由 ------------------------------ */
@@ -24,7 +26,7 @@ export function createApp(): Hono<AppEnv> {
     c.json({
       status: 'ok',
       service: 'glimmer-api',
-      version: '1.0.0',
+      version: pkg.version,
       time: new Date().toISOString(),
       queue: getQueueStats(),
     }),
