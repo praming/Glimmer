@@ -89,11 +89,24 @@ export function normalizeGlobalSettings(raw: unknown): GlobalSettings {
     processing: mergeProcessing(DEFAULT_GLOBAL_SETTINGS.processing, input.processing),
     galleryVisibility: input.galleryVisibility === 'private' ? 'private' : 'shared',
     publicBaseUrl: (input.publicBaseUrl ?? DEFAULT_GLOBAL_SETTINGS.publicBaseUrl).replace(/\/+$/, ''),
+    filesPathPrefix: normalizeFilesPathPrefix(
+      input.filesPathPrefix ?? DEFAULT_GLOBAL_SETTINGS.filesPathPrefix,
+    ),
     backends,
     defaultBackends: defaultBackends.length > 0 ? defaultBackends : enabledIds.slice(0, 1),
     maxUploadSizeMb: input.maxUploadSizeMb ?? DEFAULT_GLOBAL_SETTINGS.maxUploadSizeMb,
     allowedInputMime: normalizeAllowedMime(input.allowedInputMime),
   }
+}
+
+/**
+ * 归一化直链路径前缀：去空白与首尾斜杠。
+ *
+ * ⚠️ **空串是合法结果**，表示「直接挂在根路径」而非缺省值 —— 调用方不要用
+ * 真值判断（`raw || fallback`）来兜底，否则「留空 = 根路径」会被悄悄吞掉。
+ */
+export function normalizeFilesPathPrefix(raw: string): string {
+  return (raw ?? '').trim().replace(/^\/+|\/+$/g, '')
 }
 
 /**
@@ -123,6 +136,9 @@ export function mergeGlobalSettings(
   if (patch.namingTemplate !== undefined) next.namingTemplate = patch.namingTemplate.trim()
   if (patch.galleryVisibility !== undefined) next.galleryVisibility = patch.galleryVisibility
   if (patch.publicBaseUrl !== undefined) next.publicBaseUrl = patch.publicBaseUrl.replace(/\/+$/, '')
+  if (patch.filesPathPrefix !== undefined) {
+    next.filesPathPrefix = normalizeFilesPathPrefix(patch.filesPathPrefix)
+  }
   if (patch.maxUploadSizeMb !== undefined) next.maxUploadSizeMb = patch.maxUploadSizeMb
   if (patch.allowedInputMime !== undefined) next.allowedInputMime = normalizeAllowedMime(patch.allowedInputMime)
 

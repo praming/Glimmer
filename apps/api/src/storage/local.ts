@@ -1,7 +1,8 @@
 import fs from 'node:fs/promises'
 import path from 'node:path'
-import { joinUrl, sanitizeStoragePath } from '@glimmer/shared'
+import { joinUrl, normalizeFilesPathPrefix, sanitizeStoragePath } from '@glimmer/shared'
 import { env, paths } from '../env'
+import { DEFAULT_FILES_ROUTE_PREFIX } from './prefix'
 import {
   BaseStorageAdapter,
   describeStorageError,
@@ -24,12 +25,17 @@ export interface LocalAdapterOptions {
   /**
    * 全局「自定义域名」（后台设置），本后端的 publicBaseUrl 留空时用它。
    *
-   * 注意与 publicBaseUrl 的区别：这里传的是**裸域名/根地址**（不含 `/files`），
-   * 由适配器自己补 `/files` —— 因为本地文件是由 API 的 `/files/*` 路由提供的，
-   * 而那个后缀不该逼用户手写。两者都为空时才回落到 env `PUBLIC_BASE_URL`。
+   * 注意与 publicBaseUrl 的区别：这里传的是**裸域名/根地址**（不含路径前缀），
+   * 由适配器自己补当前生效的 `filesPrefix` —— 因为本地文件由 API 的静态路由提供，
+   * 那段前缀不该逼用户手写。两者都为空时才回落到 env `PUBLIC_BASE_URL`。
    */
   globalBaseUrl?: string
-  /** 对象键前缀 */
+  /**
+   * 直链的路径前缀（不含首尾斜杠），来自 `resolveFilesPrefix()`。
+   * 空串表示直接挂在根路径。**仅在 `publicBaseUrl` 留空时参与拼接**。
+   */
+  filesPrefix?: string
+  /** 对象键前缀（存储子目录，会同时体现在磁盘路径与 URL 上） */
   pathPrefix?: string
 }
 
@@ -52,11 +58,12 @@ export class LocalStorageAdapter extends BaseStorageAdapter implements StorageAd
     this.name = options.name
     this.root = options.directory?.trim() ? path.resolve(options.directory.trim()) : paths.uploads
     this.pathPrefix = (options.pathPrefix ?? '').replace(/^\/+|\/+$/g, '')
+    // 前缀为空串（挂根路径）时 joinUrl(base, '') 会原样返回 base，无需特判。
     this.baseUrl = options.publicBaseUrl?.trim()
       ? options.publicBaseUrl.trim().replace(/\/+$/, '')
       : joinUrl(
           (options.globalBaseUrl?.trim() || env.PUBLIC_BASE_URL).replace(/\/+$/, ''),
-          'files',
+          normalizeFilesPathPrefix(options.filesPrefix ?? DEFAULT_FILES_ROUTE_PREFIX),
         )
   }
 

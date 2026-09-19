@@ -8,7 +8,7 @@ import { env, isDev } from './env'
 import type { AppEnv } from './lib/context'
 import { HttpError } from './lib/errors'
 import { authRoutes } from './routes/auth'
-import { fileRoutes } from './routes/files'
+import { staticFilesMiddleware } from './routes/files'
 import { imageRoutes } from './routes/images'
 import { meRoutes, settingsRoutes } from './routes/settings'
 import { statsRoutes } from './routes/stats'
@@ -141,7 +141,10 @@ export function createApp(): Hono<AppEnv> {
 
   /* ------------------------------ 挂载 ------------------------------ */
   app.route('/api', api)
-  app.route('/files', fileRoutes)
+  // 静态文件路由**不能**静态挂载：前缀是可配置的（默认 /files，可改可留空成根路径），
+  // 用 app.route(前缀, …) 的话改完必须重启进程。交给中间件按当前配置动态认领，
+  // 注册在 /api 之后，因此 /api/** 仍由上面那行优先接管、不受影响。
+  app.use('*', staticFilesMiddleware)
 
   return app
 }

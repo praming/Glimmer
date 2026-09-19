@@ -226,6 +226,18 @@ export interface GlobalSettings {
   galleryVisibility: GalleryVisibility
   /** 全局对外基地址（CDN 域名） */
   publicBaseUrl: string
+  /**
+   * 直链的路径前缀（不含首尾斜杠）。
+   *
+   * - 默认 `files` → `https://域名/files/2026/xxx.webp`
+   * - **留空字符串** → 直接挂在根路径 `https://域名/2026/xxx.webp`
+   * - 自定义（如 `img`）→ `https://域名/img/2026/xxx.webp`
+   *
+   * 它同时是 API 静态文件路由的挂载点（见 `app.ts` 的动态认领中间件），
+   * 改动后历史直链**不会自动变**（`storage_records.url` 是上传时的快照），
+   * 需执行 `node apps/api/dist/cli/rebuild-urls.js --apply` 重写。
+   */
+  filesPathPrefix: string
   /** 存储后端列表 */
   backends: BackendConfig[]
   /** 默认选中的后端 id 列表 */

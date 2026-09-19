@@ -7,6 +7,7 @@ import type {
 import { existsCache, listCache } from './cache'
 import { env } from '../env'
 import { LocalStorageAdapter } from './local'
+import { resolveFilesPrefix } from './prefix'
 import { S3StorageAdapter } from './s3'
 import type { FileInfo, StorageAdapter, StorageResult, UploadOptions } from './types'
 import { WebdavStorageAdapter } from './webdav'
@@ -98,11 +99,12 @@ interface RegistryEntry {
 
 const registry = new Map<string, RegistryEntry>()
 
-function signatureOf(config: BackendConfig, globalBaseUrl: string): string {
+function signatureOf(config: BackendConfig, globalBaseUrl: string, filesPrefix: string): string {
   // 配置未变则复用同一个 SDK 客户端。
-  // globalBaseUrl 必须进签名：本地后端的直链基地址依赖它（见 resolveBaseUrl），
-  // 不带上就会出现「后台改了域名、适配器却被当成同一个复用」的静默失效。
-  return `${globalBaseUrl}\u0000${JSON.stringify(config)}`
+  // globalBaseUrl 与 filesPrefix 都必须进签名：本地后端的直链基地址由这两者共同决定
+  // （见 resolveBaseUrl 与 LocalStorageAdapter 构造函数），不带上就会出现
+  // 「后台改了域名 / 改了路径前缀、适配器却被当成同一个复用」的静默失效。
+  return `${globalBaseUrl}\u0000${filesPrefix}\u0000${JSON.stringify(config)}`
 }
 
 /**
@@ -115,7 +117,11 @@ function resolveBaseUrl(config: BackendConfig, globalBaseUrl: string): string {
   return config.publicBaseUrl?.trim() || globalBaseUrl.trim() || env.PUBLIC_BASE_URL
 }
 
-function buildAdapter(config: BackendConfig, globalBaseUrl: string): StorageAdapter {
+function buildAdapter(
+  config: BackendConfig,
+  globalBaseUrl: string,
+  filesPrefix: string,
+): StorageAdapter {
   switch (config.type) {
     case 'local':
       return new LocalStorageAdapter({
@@ -124,6 +130,7 @@ function buildAdapter(config: BackendConfig, globalBaseUrl: string): StorageAdap
         directory: config.directory,
         publicBaseUrl: config.publicBaseUrl,
         globalBaseUrl: resolveBaseUrl(config, globalBaseUrl),
+        filesPrefix,
         pathPrefix: config.pathPrefix,
       })
     case 's3': {
@@ -167,18 +174,29 @@ function buildAdapter(config: BackendConfig, globalBaseUrl: string): StorageAdap
 
 /** 获取（并缓存）指定后端的适配器 */
 /**
+ * 影响直链基地址的那部分全局设置。
+ * 传完整的 `GlobalSettings` 也兼容（结构子集），调用点直接丢 `getGlobalSettings()` 即可。
+ */
+export type UrlSettings = Pick<GlobalSettings, 'publicBaseUrl' | 'filesPathPrefix'>
+
+/**
  * 取一个带缓存的适配器。
  *
- * `globalBaseUrl` 传全局「自定义域名」（`settings.publicBaseUrl`）；不传则按
- * env `PUBLIC_BASE_URL` 处理（等价于 v1.0.1 之前的行为）。**新增调用点请务必传**，
- * 否则「后台改域名」对该处不生效 —— 这正是 v1.0.1 之前直链全指向 localhost 的原因。
+ * 直接传**全局设置对象**（`getGlobalSettings()` 的返回值），由本函数自行解析出
+ * 「自定义域名」与「路径前缀」。这样以后再加影响直链的配置项时，所有调用点都不用
+ * 再动一遍 —— v1.0.2 就是在 6 个调用点逐个补参数。省略 / 传 null 则完全走 env 兜底。
+ *
+ * ⚠️ **新增调用点务必传 settings**，否则「后台改域名 / 改前缀」对该处不生效 ——
+ * 这正是 v1.0.1 之前直链全指向 localhost 的原因。
  */
-export function getAdapter(config: BackendConfig, globalBaseUrl: string = env.PUBLIC_BASE_URL): StorageAdapter {
-  const signature = signatureOf(config, globalBaseUrl)
+export function getAdapter(config: BackendConfig, settings?: UrlSettings | null): StorageAdapter {
+  const globalBaseUrl = settings?.publicBaseUrl ?? ''
+  const filesPrefix = resolveFilesPrefix(settings?.filesPathPrefix)
+  const signature = signatureOf(config, globalBaseUrl, filesPrefix)
   const existing = registry.get(config.id)
   if (existing && existing.signature === signature) return existing.adapter
 
-  const adapter = new CachedStorageAdapter(buildAdapter(config, globalBaseUrl))
+  const adapter = new CachedStorageAdapter(buildAdapter(config, globalBaseUrl, filesPrefix))
   registry.set(config.id, { signature, adapter })
   return adapter
 }
@@ -186,9 +204,13 @@ export function getAdapter(config: BackendConfig, globalBaseUrl: string = env.PU
 /** 构建一个不进入缓存、不包缓存的适配器实例（设置页「测试连接」使用） */
 export function createAdapter(
   config: BackendConfig,
-  globalBaseUrl: string = env.PUBLIC_BASE_URL,
+  settings?: UrlSettings | null,
 ): StorageAdapter {
-  return buildAdapter(config, globalBaseUrl)
+  return buildAdapter(
+    config,
+    settings?.publicBaseUrl ?? '',
+    resolveFilesPrefix(settings?.filesPathPrefix),
+  )
 }
 
 export interface ResolvedAdapter {
@@ -215,7 +237,7 @@ export function resolveAdapters(
     if (!config) continue
     if (!config.enabled && !options.includeDisabled) continue
     seen.add(id)
-    out.push({ config, adapter: getAdapter(config, settings.publicBaseUrl) })
+    out.push({ config, adapter: getAdapter(config, settings) })
   }
 
   return out
@@ -230,6 +252,7 @@ export function invalidateAdapterCache(): void {
 
 /** 全部本地后端的原始适配器（静态服务路由使用） */
 export function localAdapters(settings: GlobalSettings): LocalStorageAdapter[] {
+  const filesPrefix = resolveFilesPrefix(settings.filesPathPrefix)
   return settings.backends
     // 用类型谓词而非布尔表达式，否则 map 回调里的 config 仍是联合类型，
     // 访问 config.directory 会报 TS2339（该字段只存在于 local / webdav 分支）。
@@ -242,6 +265,7 @@ export function localAdapters(settings: GlobalSettings): LocalStorageAdapter[] {
           directory: config.directory,
           publicBaseUrl: config.publicBaseUrl,
           globalBaseUrl: resolveBaseUrl(config, settings.publicBaseUrl),
+          filesPrefix,
           pathPrefix: config.pathPrefix,
         }),
     )
@@ -249,8 +273,8 @@ export function localAdapters(settings: GlobalSettings): LocalStorageAdapter[] {
 
 /**
  * 所有本地后端的存储根目录。
- * 对外 URL 形如 `{base}/files/{pathPrefix}/{rel}`，因此
- * `root + '/' + urlPath` 即为磁盘上的真实路径。
+ * 对外 URL 形如 `{base}/{filesPrefix}/{pathPrefix}/{rel}`（`filesPrefix` 可为空 = 根路径），
+ * 因此把 `{pathPrefix}/{rel}` 交给 `path.resolve(root, …)` 即为磁盘上的真实路径。
  */
 export function localRoots(settings: GlobalSettings): string[] {
   const roots = new Set<string>()

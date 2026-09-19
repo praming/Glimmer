@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import { NAMING_TEMPLATE_PRESETS, NAMING_TEMPLATE_VARS, applyNamingTemplate } from '@glimmer/shared'
+import {
+  NAMING_TEMPLATE_PRESETS,
+  NAMING_TEMPLATE_VARS,
+  applyNamingTemplate,
+  normalizeFilesPathPrefix,
+} from '@glimmer/shared'
 import { Info } from 'lucide-vue-next'
 
 const store = useSettingsStore()
@@ -8,6 +13,7 @@ const toast = useToast()
 const form = ref({
   namingTemplate: '',
   publicBaseUrl: '',
+  filesPathPrefix: 'files',
   galleryVisibility: 'shared' as 'shared' | 'private',
   maxUploadSizeMb: 20,
 })
@@ -19,6 +25,7 @@ watch(
     form.value = {
       namingTemplate: value.namingTemplate,
       publicBaseUrl: value.publicBaseUrl,
+      filesPathPrefix: value.filesPathPrefix ?? 'files',
       galleryVisibility: value.galleryVisibility,
       maxUploadSizeMb: value.maxUploadSizeMb,
     }
@@ -47,6 +54,27 @@ const preview = computed(() => {
   }
 })
 
+/**
+ * 直链路径前缀是否被环境变量锁死。
+ * 锁死后后台改了也不会生效 —— 必须显式告知，否则又是一处「静默失效」。
+ */
+const filesPrefixLocked = computed(() => Boolean(store.runtime?.filesRoutePrefixEnv))
+
+const filesPrefixHint = computed(() => {
+  if (filesPrefixLocked.value) {
+    const effective = store.runtime?.filesRoutePrefixEffective
+    return `已被环境变量 FILES_ROUTE_PREFIX 锁定为「${effective || '(根路径)'}」，此处修改不会生效`
+  }
+  return '留空 = 直接挂在根路径；默认 files。改动只影响新上传，历史图片的直链需执行 rebuild-urls --apply 重写'
+})
+
+/** 直链效果预览：用当前域名与前缀拼一个样例，让改动的后果一眼可见 */
+const prefixPreview = computed(() => {
+  const host = (form.value.publicBaseUrl || 'https://img.example.com').replace(/\/+$/, '')
+  const prefix = normalizeFilesPathPrefix(form.value.filesPathPrefix ?? '')
+  return `${host}/${prefix ? `${prefix}/` : ''}2026/0919-7sgcq0.webp`
+})
+
 /** 点击变量徽标 → 追加到模板末尾 */
 function insertVar(token: string): void {
   const current = form.value.namingTemplate
@@ -59,6 +87,7 @@ async function submit(): Promise<void> {
   await store.save({
     namingTemplate: form.value.namingTemplate,
     publicBaseUrl: form.value.publicBaseUrl,
+    filesPathPrefix: normalizeFilesPathPrefix(form.value.filesPathPrefix ?? ''),
     galleryVisibility: form.value.galleryVisibility,
     maxUploadSizeMb: form.value.maxUploadSizeMb,
   })
@@ -128,8 +157,24 @@ async function submit(): Promise<void> {
           label="自定义域名"
           mono
           placeholder="https://img.example.com"
-          hint="复制出来的图片直链用这个域名（这是根地址，本地存储会自动补 /files）。优先级低于「存储后端 → 访问域名」；留空则使用环境变量 PUBLIC_BASE_URL"
+          hint="复制出来的图片直链用这个域名（这是根地址，本地存储会自动补上下面配置的路径前缀）。优先级低于「存储后端 → 访问域名」；留空则使用环境变量 PUBLIC_BASE_URL"
         />
+
+        <AppInput
+          v-model="form.filesPathPrefix"
+          label="直链路径前缀"
+          mono
+          placeholder="files"
+          :disabled="filesPrefixLocked"
+          :hint="filesPrefixHint"
+        />
+
+        <div class="rounded-lg bg-muted/50 px-3.5 py-2.5">
+          <p class="text-[11px] break-all text-muted-foreground">
+            直链预览：
+            <code class="ml-1 font-mono text-foreground">{{ prefixPreview }}</code>
+          </p>
+        </div>
 
         <AppInput
           v-model.number="form.maxUploadSizeMb"

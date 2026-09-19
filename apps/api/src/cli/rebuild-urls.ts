@@ -27,6 +27,7 @@ import { sqlite } from '../db'
 import { DEFAULT_PUBLIC_BASE_URL, env, paths } from '../env'
 import { getGlobalSettings } from '../services/settings'
 import { createAdapter } from '../storage'
+import { resolveFilesPrefix } from '../storage/prefix'
 
 interface RecordRow {
   id: string
@@ -74,7 +75,7 @@ function printUsage(): void {
 说明：
   · 数据库取自环境变量 DATABASE_URL，当前为：${paths.database}
   · 直链按当前配置重算：后端「访问域名」> 后台「自定义域名」> env PUBLIC_BASE_URL
-    （本地存储在后两者之下会自动补 /files）
+    （本地存储在后两者之下会自动补当前生效的路径前缀，默认 /files，可改可留空）
   · 只改数据库里的 URL 字符串，不移动、不重新处理任何图片文件
   · 写回立即生效，不需要重启容器；前台图库需刷新页面才会重新拉取
 `)
@@ -107,6 +108,14 @@ function main(): void {
   print(
     `基地址优先级：后端「访问域名」 > 后台「自定义域名」(${settings.publicBaseUrl || '空'}) > ` +
       `env (${env.PUBLIC_BASE_URL}${process.env.PUBLIC_BASE_URL ? '' : '，未显式设置 → 用的就是内置默认值'})`,
+  )
+
+  const effectivePrefix = resolveFilesPrefix(settings.filesPathPrefix)
+  const rawPrefix = settings.filesPathPrefix ?? ''
+  print(
+    `路径前缀：${effectivePrefix ? `/${effectivePrefix}` : '（无 —— 直链直接挂在根路径）'}` +
+      `  [后台：${rawPrefix === '' ? '留空' : `/${rawPrefix}`}` +
+      `${env.FILES_ROUTE_PREFIX ? `；被 env FILES_ROUTE_PREFIX=${env.FILES_ROUTE_PREFIX} 覆盖` : ''}]`,
   )
   print('')
 
@@ -145,7 +154,7 @@ function main(): void {
     try {
       // 用真实适配器算，而不是在这里重写一遍拼接规则 ——
       // 「同一件事两处实现」正是直链出错的老根源（见 storage/local.ts 的注释）。
-      after = createAdapter(config, settings.publicBaseUrl).getUrl(record.path)
+      after = createAdapter(config, settings).getUrl(record.path)
     } catch (error) {
       const key = `无法构建适配器（${(error as Error).message}）`
       skipped.set(key, (skipped.get(key) ?? 0) + 1)

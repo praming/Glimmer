@@ -3,8 +3,9 @@
  * ============================================================================
  * 为什么需要它：
  *   前端是 SPA，`NUXT_PUBLIC_API_BASE=/api` 是**同源相对路径**，浏览器会把
- *   `/api/**` 与 `/files/**` 打到当前站点的同一端口上。而 Nitro 只提供前端资源，
- *   本身不含后端路由 —— 所以这两类请求必须由某一层转发给 API（容器内 :3000）。
+ *   `/api/**` 与**图片直链**（路径前缀可配置，默认 `/files/**`）打到当前站点的同一
+ *   端口上。而 Nitro 只提供前端资源，本身不含后端路由 —— 所以这两类请求必须由某一层
+ *   转发给 API（容器内 :3000）。
  *
  *   有了这个中间件，`glimmer-web` 自己就能承担转发职责，于是：
  *     · 默认部署只需要 **两个容器**，对外只暴露 **一个端口**，无需额外的 Nginx；
@@ -18,17 +19,38 @@
  * ============================================================================
  */
 
+import { EXT_TO_MIME } from '@glimmer/shared'
+
 /** 上游 API 地址。编排里固定为服务名 `glimmer-api`，可用 API_PROXY_TARGET 覆盖。 */
 const TARGET = (process.env.API_PROXY_TARGET || 'http://glimmer-api:3000').replace(/\/+$/, '')
 
 /** 仅生产构建启用（见文件头说明） */
 const ENABLED = process.env.NODE_ENV === 'production'
 
-/** 需要转发的路径前缀 */
-const PREFIXES = ['/api', '/files']
+/**
+ * 需要无条件转发的路径前缀。
+ *
+ * 这里**只留 `/api`**：图片直链的前缀是可配置的（默认 `files`，可以改成 `img`，
+ * 也可以留空直接挂在根路径），Web 层预知不了它，硬编码就会「后台一改、链接全 404」。
+ * 因此改为按「像不像文件路径」判定（见 FILE_PATH_RE）—— 无论前缀改成什么，
+ * 本容器都不必跟着改，也不必重启。
+ */
+const PREFIXES = ['/api']
+
+/**
+ * 「看得出是文件」的路径（末段带扩展名）。
+ *
+ * 图片直链天然满足（`/files/2026/xxx.webp`、`/img/2026/xxx.webp`、`/2026/xxx.webp`），
+ * 而前端路由（`/dashboard`、`/settings/...`）不含扩展名，这条规则足以把两者分开。
+ * 扩展名列表直接取自 `@glimmer/shared` 的 `EXT_TO_MIME`，避免两处各写一份而漂移。
+ */
+const FILE_PATH_RE = new RegExp(`\\.(?:${Object.keys(EXT_TO_MIME).join('|')})$`, 'i')
 
 function shouldProxy(pathname: string): boolean {
-  return PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
+  if (PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))) {
+    return true
+  }
+  return FILE_PATH_RE.test(pathname)
 }
 
 function firstValue(value: string | string[] | undefined): string | undefined {

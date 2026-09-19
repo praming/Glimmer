@@ -16,6 +16,10 @@ interface SettingsPayload {
   runtime: {
     nodeEnv: string
     publicBaseUrl: string
+    /** env 里显式设置的直链前缀（空串 = 未设置，以库里的设置为准） */
+    filesRoutePrefixEnv: string
+    /** 当前真正生效的直链前缀（空串 = 直接挂在根路径） */
+    filesRoutePrefixEffective: string
     maxUploadSizeMb: number
     storageRoot: string
     database: string

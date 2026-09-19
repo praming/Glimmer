@@ -180,6 +180,12 @@ export const globalSettingsPatchSchema = z.object({
   processing: processingSettingsSchema,
   galleryVisibility: galleryVisibilitySchema,
   publicBaseUrl: z.string().trim().max(300),
+  // 允许空串（= 挂在根路径）；不允许空格与 ? # 等会破坏 URL 解析的字符
+  filesPathPrefix: z
+    .string()
+    .trim()
+    .max(120)
+    .regex(/^[A-Za-z0-9._~\-/]*$/, '前缀只能包含字母、数字与 - _ . ~ / 等 URL 路径字符'),
   backends: z.array(backendConfigSchema).max(20),
   defaultBackends: z.array(z.string()).max(20),
   maxUploadSizeMb: z.number().int().min(1).max(500),

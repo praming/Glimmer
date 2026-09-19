@@ -445,7 +445,7 @@ export async function deleteImageFiles(imageId: string): Promise<DeleteOutcome> 
         return
       }
       try {
-        const adapter = getAdapter(config, settings.publicBaseUrl)
+        const adapter = getAdapter(config, settings)
         await adapter.delete(record.path)
         deletedFromStorage += 1
       } catch (error) {
@@ -548,7 +548,7 @@ export async function renameImage(
     let buffer: Buffer | null = null
     if (sourceConfig) {
       try {
-        buffer = await getAdapter(sourceConfig, settings.publicBaseUrl).download(sourceRecord.path)
+        buffer = await getAdapter(sourceConfig, settings).download(sourceRecord.path)
       } catch (error) {
         failures.push({
           variantId: variant.id,
@@ -572,7 +572,7 @@ export async function renameImage(
           return
         }
         try {
-          const adapter = getAdapter(config, settings.publicBaseUrl)
+          const adapter = getAdapter(config, settings)
           const uploaded = await adapter.upload(buffer!, newPath)
           if (record.path !== newPath) {
             await adapter.delete(record.path).catch(() => false)

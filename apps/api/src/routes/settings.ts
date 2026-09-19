@@ -28,6 +28,7 @@ import {
   saveUserPreferences,
 } from '../services/settings'
 import { createAdapter, invalidateAdapterCache } from '../storage'
+import { resolveFilesPrefix } from '../storage/prefix'
 
 export const settingsRoutes = new Hono<AppEnv>()
 
@@ -46,6 +47,10 @@ settingsRoutes.get('/', requireAdmin, (c) => {
     runtime: {
       nodeEnv: env.NODE_ENV,
       publicBaseUrl: env.PUBLIC_BASE_URL,
+      /** env 里显式设置的直链前缀（空串 = 未设置，此时以库里的设置为准） */
+      filesRoutePrefixEnv: env.FILES_ROUTE_PREFIX,
+      /** 当前真正生效的直链前缀（空串 = 直接挂在根路径） */
+      filesRoutePrefixEffective: resolveFilesPrefix(settings.filesPathPrefix),
       maxUploadSizeMb: env.MAX_UPLOAD_SIZE_MB,
       storageRoot: paths.uploads,
       database: paths.database,
@@ -102,7 +107,7 @@ settingsRoutes.post('/backends/test', requireAdmin, async (c) => {
 
   const started = Date.now()
   try {
-    const adapter = createAdapter(config, getGlobalSettings().publicBaseUrl)
+    const adapter = createAdapter(config, getGlobalSettings())
     await adapter.test()
     return ok(c, {
       ok: true,

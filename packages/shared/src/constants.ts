@@ -273,6 +273,7 @@ export const DEFAULT_GLOBAL_SETTINGS: GlobalSettings = {
   },
   galleryVisibility: 'shared',
   publicBaseUrl: '',
+  filesPathPrefix: 'files',
   backends: [{ ...DEFAULT_LOCAL_BACKEND }],
   defaultBackends: [DEFAULT_LOCAL_BACKEND_ID],
   maxUploadSizeMb: 20,

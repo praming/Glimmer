@@ -1,5 +1,13 @@
+import { EXT_TO_MIME } from '@glimmer/shared'
 // 版本号唯一来源：仓库根 package.json
 import pkg from '../../package.json'
+
+/**
+ * 「末段带图片扩展名」的正则，开发环境 devProxy 用它兜住**自定义**的直链前缀。
+ * `^…$` 形式会被 Nuxt 当作正则而非路径前缀；扩展名取自 shared 的 `EXT_TO_MIME`，
+ * 可避免两处各写一份而漂移。
+ */
+const IMAGE_PATH_RE = `^/.*\\.(?:${Object.keys(EXT_TO_MIME).join('|')})$`
 
 export default defineNuxtConfig({
   compatibilityDate: '2025-01-01',
@@ -58,12 +66,18 @@ export default defineNuxtConfig({
   nitro: {
     preset: 'node-server',
     /**
-     * 仅开发环境生效：把 /api 与 /files 转发到本地 Hono API（3000）。
-     * 生产环境由 Nginx 同源代理，Nuxt 不参与转发。
+     * 仅开发环境生效：把 /api 与图片直链转发到本地 Hono API（3000）。
+     * 生产环境由同源代理中间件负责（见 server/middleware/api-proxy.ts），Nuxt 不参与。
+     *
+     * 直链前缀是可配置的（默认 files，可改可留空），所以除了默认前缀那条，
+     * 再用 IMAGE_PATH_RE 兜住自定义前缀；该正则若不被支持只会退化成「永不匹配」，
+     * 不会破坏 `/files` 这条默认规则。图片规则的 target **不带路径**，
+     * 原样保留 URL，交给 API 按当前前缀认领。
      */
     devProxy: {
       '/api': { target: 'http://127.0.0.1:3000/api', changeOrigin: true },
       '/files': { target: 'http://127.0.0.1:3000/files', changeOrigin: true },
+      [IMAGE_PATH_RE]: { target: 'http://127.0.0.1:3000', changeOrigin: true },
     },
   },
 

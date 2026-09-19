@@ -165,6 +165,19 @@ const EnvSchema = z.object({
   AUTH_RATE_LIMIT_WINDOW_SECONDS: z.coerce.number().int().min(1).max(86400).default(900),
 
   PUBLIC_BASE_URL: z.string().default(DEFAULT_PUBLIC_BASE_URL),
+
+  /**
+   * 直链路径前缀的**部署级强制值**（不含首尾斜杠）。
+   *
+   * - 留空（默认）：不强制，以后台「设置 → 命名与域名 → 直链路径前缀」为准
+   * - 填 `img`：所有直链强制为 `https://域名/img/2026/xxx.webp`（后台改不动）
+   * - 填 `/`：强制挂在**根路径**（`https://域名/2026/xxx.webp`，即去掉 /files）
+   *
+   * 之所以让 env 的优先级**高于**后台设置：它同时决定 API 静态文件路由的挂载点，
+   * 属于「服务端路由契约」，部署方需要能一言定死，避免反代两侧配置漂移。
+   */
+  FILES_ROUTE_PREFIX: z.string().default(''),
+
   MAX_UPLOAD_SIZE_MB: z.coerce.number().int().min(1).max(500).default(20),
   QUEUE_CONCURRENCY: z.coerce.number().int().min(1).max(16).default(2),
 })

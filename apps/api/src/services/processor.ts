@@ -87,7 +87,7 @@ async function downloadFrom(
   const config = settings.backends.find((b) => b.id === record.backend)
   if (!config) return null
   try {
-    const adapter = getAdapter(config, settings.publicBaseUrl)
+    const adapter = getAdapter(config, settings)
     return await adapter.download(record.path)
   } catch {
     return null
@@ -459,7 +459,7 @@ async function processImageInner(imageId: string): Promise<void> {
       }
 
       try {
-        const adapter = getAdapter(config, settings.publicBaseUrl)
+        const adapter = getAdapter(config, settings)
         const uploaded = await adapter.upload(payload, record.path, {
           contentType: contentTypeFor(variant.format, image.mimeType),
         })
