@@ -133,7 +133,7 @@ export const storageRecords = sqliteTable(
       .references(() => imageVariants.id, { onDelete: 'cascade' }),
     /** 存储后端配置 id（如 local / s3-r2 / webdav-jianguo） */
     backend: text('backend').notNull(),
-    /** 含后端 pathPrefix 的完整存储路径 */
+    /** 相对存储路径，**不含**后端 pathPrefix（上传/删除/取 URL 时由适配器自行拼接） */
     path: text('path').notNull(),
     url: text('url'),
     status: text('status', { enum: ['pending', 'ready', 'failed'] })

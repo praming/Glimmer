@@ -44,6 +44,8 @@ export interface StorageAdapter {
   delete(path: string): Promise<boolean>
   /** 判断文件是否存在 */
   exists(path: string): Promise<boolean>
+  /** 构造适配器时发现的「配置可疑但已可运行」之处，由「测试连接」回显给用户 */
+  readonly notices?: readonly string[]
   /** 计算对外 URL（不发起网络请求） */
   getUrl(path: string): string
   /** 列出前缀下的文件 */

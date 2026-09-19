@@ -27,7 +27,7 @@ import {
   saveGlobalSettings,
   saveUserPreferences,
 } from '../services/settings'
-import { createAdapter, invalidateAdapterCache } from '../storage'
+import { createAdapter, invalidateAdapterCache, type StorageAdapter } from '../storage'
 import { resolveFilesPrefix } from '../storage/prefix'
 
 export const settingsRoutes = new Hono<AppEnv>()
@@ -106,18 +106,25 @@ settingsRoutes.post('/backends/test', requireAdmin, async (c) => {
   }
 
   const started = Date.now()
+  // 适配器在构造期可能纠正配置并留下提示（如 S3 Endpoint 里混入了空间名），
+  // 无论测试成功还是失败都要回显 —— 否则用户只会看到一句莫名其妙的连接错误。
+  let adapter: StorageAdapter | null = null
   try {
-    const adapter = createAdapter(config, getGlobalSettings())
+    adapter = createAdapter(config, getGlobalSettings())
     await adapter.test()
+    const notices = adapter.notices ?? []
     return ok(c, {
       ok: true,
-      message: `连接成功 · ${config.type.toUpperCase()}`,
+      message: [`连接成功 · ${config.type.toUpperCase()}`, ...notices].join(' · '),
+      notices,
       latencyMs: Date.now() - started,
     })
   } catch (error) {
+    const notices = adapter?.notices ?? []
     return ok(c, {
       ok: false,
-      message: (error as Error).message,
+      message: [(error as Error).message, ...notices].join(' · '),
+      notices,
       latencyMs: Date.now() - started,
     })
   }

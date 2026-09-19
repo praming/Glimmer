@@ -133,6 +133,58 @@ async function testDraft(): Promise<void> {
   testing.value = false
 }
 
+/* ------------------------------------------------------------------ */
+/* 路径 / Endpoint 提示                                                 */
+/* ------------------------------------------------------------------ */
+
+/** 与后端 normalizeFilesPathPrefix 同规则：去掉首尾斜杠 */
+function cleanPrefix(value: string | undefined): string {
+  return (value ?? '').trim().replace(/^\/+|\/+$/g, '')
+}
+
+/** 对象键的根节点叫什么（随后端类型而变），预览文案里用得上 */
+const rootLabel = computed(() => {
+  if (draft.value?.type === 's3') return '空间根目录'
+  if (draft.value?.type === 'webdav') return '远端子目录'
+  return '存储根目录'
+})
+
+/** 存储位置预览：把「路径前缀在命名规则之前」这件事直接画出来 */
+const pathPreview = computed(() => {
+  if (!draft.value) return ''
+  const prefix = cleanPrefix(draft.value.pathPrefix)
+  return [prefix, '2026/0919-7sgcq0.webp'].filter(Boolean).join('/')
+})
+
+/**
+ * 路径前缀是否与空间名同名 —— 等于在空间里再套一层同名目录，几乎肯定是误填。
+ */
+const pathPrefixWarning = computed(() => {
+  if (!draft.value || draft.value.type !== 's3') return ''
+  const prefix = cleanPrefix(draft.value.pathPrefix)
+  const bucket = (draft.value.bucket ?? '').trim()
+  if (!prefix || !bucket || prefix.toLowerCase() !== bucket.toLowerCase()) return ''
+  return '路径前缀与空间名同名，会在空间内再建一层同名目录。不需要这层目录请直接留空。'
+})
+
+/**
+ * Endpoint 里是否混入了空间名。
+ * 各家控制台都会同时给出「服务域名」与「空间域名」，后者形如
+ * `<空间名>.s3.cn-east-1.qiniucs.com`。误填它会让对象被多套一层同名目录，
+ * 症状是「空间根目录里凭空多了个和自己同名的文件夹」——事后极难归因。
+ * 后端会自动忽略这段多余的主机名，但保存前就要让用户看见。
+ */
+const endpointWarning = computed(() => {
+  if (!draft.value || draft.value.type !== 's3') return ''
+  const bucket = (draft.value.bucket ?? '').trim()
+  const endpoint = (draft.value.endpoint ?? '').trim()
+  if (!bucket || !endpoint) return ''
+  const host = endpoint.replace(/^[a-z][a-z0-9+.-]*:\/\//i, '').split('/')[0] ?? ''
+  const first = host.split('.')[0] ?? ''
+  if (first.toLowerCase() !== bucket.toLowerCase()) return ''
+  return `Endpoint 的主机名首段就是空间名「${bucket}」。这里应填服务域名（七牛：https://s3.cn-east-1.qiniucs.com），填「空间域名」会让对象多套一层同名目录 —— 保存后会被自动忽略。`
+})
+
 async function saveAll(): Promise<void> {
   const saved = await store.save({ backends: draftList.value })
   if (saved) dirty.value = false
@@ -244,7 +296,21 @@ async function saveAll(): Promise<void> {
                 : '该后端的对外前缀，留空则由服务地址推导'
             "
           />
-          <AppInput v-model="draft.pathPrefix" label="路径前缀" placeholder="如 images/2026" />
+          <AppInput
+            v-model="draft.pathPrefix"
+            label="路径前缀（存储子目录）"
+            mono
+            placeholder="留空 = 直接放在根目录"
+            hint="在命名规则之前多一层目录（磁盘 / 对象键与直链都会带上）。留空即不加；⚠️ 事后改动不会搬移已有文件，老图的直链与删除都会错位"
+          />
+        </div>
+
+        <div class="rounded-lg bg-muted/50 px-3.5 py-2.5">
+          <p class="text-[11px] break-all text-muted-foreground">
+            {{ rootLabel }} 下的存储位置：
+            <code class="ml-1 font-mono text-foreground">{{ pathPreview }}</code>
+          </p>
+          <p v-if="pathPrefixWarning" class="mt-1.5 text-[11px] text-warning">{{ pathPrefixWarning }}</p>
         </div>
 
         <!-- 本地 -->
@@ -259,10 +325,30 @@ async function saveAll(): Promise<void> {
 
         <!-- S3 -->
         <template v-else-if="draft.type === 's3'">
+          <AppInput
+            v-model="draft.endpoint"
+            label="Endpoint（服务域名）"
+            mono
+            placeholder="https://s3.cn-east-1.qiniucs.com"
+            hint="填控制台给出的服务域名，不要填「空间域名」（形如 glimmer.s3.cn-east-1.qiniucs.com）。七牛：https://s3.cn-east-1.qiniucs.com · R2：https://<账号>.r2.cloudflarestorage.com"
+          />
+
+          <p
+            v-if="endpointWarning"
+            class="rounded-lg bg-warning-soft px-3.5 py-2.5 text-[11px] text-warning"
+          >
+            {{ endpointWarning }}
+          </p>
+
           <div class="grid gap-3.5 sm:grid-cols-2">
-            <AppInput v-model="draft.endpoint" label="Endpoint" mono placeholder="https://xxx.r2.cloudflarestorage.com" />
             <AppInput v-model="draft.region" label="Region" mono placeholder="auto / us-east-1" />
-            <AppInput v-model="draft.bucket" label="Bucket" mono required />
+            <AppInput
+              v-model="draft.bucket"
+              label="Bucket（空间名）"
+              mono
+              required
+              hint="七牛填「S3 空间名」：空间概览 → S3 域名 处可查看"
+            />
             <AppInput v-model="draft.accessKeyId" label="Access Key ID" mono />
           </div>
 
@@ -277,7 +363,7 @@ async function saveAll(): Promise<void> {
           <AppSwitch
             v-model="draft.forcePathStyle"
             label="使用 Path-Style 访问"
-            description="MinIO、部分自建 S3 服务需要开启；Cloudflare R2 通常不需要。"
+            description="MinIO、七牛 Kodo 及多数自建 S3 服务建议开启；Cloudflare R2 / AWS S3 通常不需要。"
           />
         </template>
 
