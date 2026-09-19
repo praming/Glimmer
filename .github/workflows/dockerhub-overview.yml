@@ -9,14 +9,19 @@ name: dockerhub-overview
 #   1) 修改 docs/dockerhub/** 推送到 main → 自动同步（改文案即上线，无需发版）
 #   2) Actions 页面手动触发 → 可随时重跑；dry_run 只校验凭据与文件，不提交
 #
-# ⚠️ 凭据要求（这是本工作流唯一容易卡住的地方）：
-#   改仓库介绍属于「仓库元数据编辑」，Docker Hub **拒绝 Read & Write 的 PAT**
-#   （返回 403 {"message":"access denied: insufficient scope"}），
-#   必须是 **Read, Write, & Delete** 权限的 Personal access token：
-#     Docker Hub → 头像 → Account settings → Personal access tokens → Generate new token
-#     Access permissions 选「Read, Write, & Delete」
-#   取值顺序：DOCKERHUB_OVERVIEW_TOKEN（推荐，专用最小权限）> DOCKERHUB_TOKEN（与镜像发布共用）。
-#   若沿用一个 secret，注意镜像发布只要 Read & Write，而本工作流需要更高的那一档。
+# ── 凭据取值的顺序 ──────────────────────────────────────────────
+#   DOCKERHUB_OVERVIEW_TOKEN（可选，推荐）> DOCKERHUB_TOKEN（与镜像发布共用）
+#   分开是为了最小权限：推镜像只需 Read & Write，而改仓库介绍属于「仓库元数据编辑」，
+#   Docker Hub 对 Write 档的 PAT 直接返回：
+#       403 {"message":"access denied: insufficient scope"}
+#   所以这个专用令牌要选 **Read, Write, & Delete** 权限：
+#     头像 → Account settings → Personal access tokens → Generate new token
+#
+# ── 取令牌也不止一种流程（实测差异很大，故全部尝试） ─────────────
+#   a) POST /v2/auth/token  {identifier, secret} → access_token（当前文档推荐，短效）
+#   b) POST /v2/users/login/            → JWT（旧版；开启 2FA 的账号会被拒）
+#   PATCH 时依次尝试「新令牌 + 经典路由」「旧 JWT + 经典路由」「新令牌 + 命名空间路由」，
+#   任一条 200 即成功。三条都失败才报错，并打印可执行的补救步骤。
 #
 # 与 docker-publish 的关系：本工作流只改仓库介绍文案，不构建、不推送镜像 ——
 # publish 的 paths 只认 apps/** 等构建相关路径，因此不会被这里带起一次镜像发布。
@@ -64,7 +69,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # secret 名写错时，登录只会抛一句含糊的 401，先自己检查一遍
+      # secret 名写错时只会抛一句含糊的 401，先自己检查一遍
       - name: 检查凭据与文档
         run: |
           missing=""
@@ -79,20 +84,37 @@ jobs:
           echo "待同步：$DOC（$(wc -c < "$DOC") 字节）→ $DH_USER/$REPO"
           echo "标题行：$(head -1 "$DOC")"
 
-      - name: 登录 Docker Hub
+      - name: 获取访问令牌（两种流程都试）
         run: |
           set -e
-          token=$(curl -fsS -X POST https://hub.docker.com/v2/users/login/ \
+          # a) 当前文档推荐的流程：账号 + PAT 换一个短效 access_token
+          access=$(curl -sS -X POST https://hub.docker.com/v2/auth/token \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg i "$DH_USER" --arg s "$DH_TOKEN" '{identifier:$i,secret:$s}')" \
+            | jq -r '.access_token // empty')
+          if [ -n "$access" ]; then
+            echo "::add-mask::$access"
+            echo "DH_ACCESS=$access" >> "$GITHUB_ENV"
+            echo "已通过 /v2/auth/token 换取短效访问令牌"
+          else
+            echo "::warning::/v2/auth/token 未返回 access_token，将只依赖旧版登录流程"
+          fi
+
+          # b) 旧流程：/v2/users/login/ 换 JWT（2FA 账号可能被拒）
+          jwt=$(curl -sS -X POST https://hub.docker.com/v2/users/login/ \
             -H 'Content-Type: application/json' \
             -d "$(jq -nc --arg u "$DH_USER" --arg p "$DH_TOKEN" '{username:$u,password:$p}')" \
             | jq -r '.token // empty')
-          if [ -z "$token" ]; then
-            echo "::error::Docker Hub 登录失败 —— 凭据必须是 Personal access token，不能用登录密码"
+          if [ -n "$jwt" ]; then
+            echo "::add-mask::$jwt"
+            echo "DH_JWT=$jwt" >> "$GITHUB_ENV"
+            echo "已通过 /v2/users/login/ 获取 JWT"
+          fi
+
+          if [ -z "$access" ] && [ -z "$jwt" ]; then
+            echo "::error::两种取令牌的方式都失败 —— 请确认凭据是有效的 Personal access token（不能用登录密码）"
             exit 1
           fi
-          echo "::add-mask::$token"
-          echo "DH_JWT=$token" >> "$GITHUB_ENV"
-          echo "登录成功（JWT 已获取并掩码）"
 
       - name: 同步 Full description
         run: |
@@ -105,38 +127,48 @@ jobs:
 
           # -Rs：把整份 markdown 当成一个 JSON 字符串，换行由 jq 转义，payload 始终是单行
           payload=$(jq -Rs '{full_description: .}' "$DOC")
+          last_code=000
+          last_url=""
 
-          # 两种认证都试一遍：先用 /users/login/ 换来的 JWT（官方文档的写法），
-          # 若被拒再直接把 PAT 当 Bearer ——不同代的令牌在这套接口上表现并不一致。
-          try_patch() {
-            curl -sS -o /tmp/resp.json -w '%{http_code}' -X PATCH \
-              "https://hub.docker.com/v2/repositories/$DH_USER/$REPO/" \
-              -H "Authorization: $1" \
+          # $1=说明 $2=Authorization 头（空则跳过）$3=URL
+          attempt() {
+            [ -z "$2" ] && return 1
+            last_url="$3"
+            last_code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X PATCH "$3" \
+              -H "Authorization: $2" \
               -H 'Content-Type: application/json' \
-              --data-binary "$payload"
-          }
-
-          auth=""
-          code=000
-          for candidate in "JWT $DH_JWT" "Bearer $DH_TOKEN"; do
-            code=$(try_patch "$candidate")
-            echo "PATCH $DH_USER/$REPO（$(echo "$candidate" | cut -d' ' -f1) 认证）→ HTTP $code"
-            if [ "$code" = "200" ]; then auth="$candidate"; break; fi
+              --data-binary "$payload")
+            echo "尝试「$1」→ HTTP $last_code"
+            if [ "$last_code" = "200" ]; then
+              echo "DH_AUTH=$2" >> "$GITHUB_ENV"
+              return 0
+            fi
             cat /tmp/resp.json 2>/dev/null || true
             echo
-          done
+            return 1
+          }
 
-          if [ -z "$auth" ]; then
-            if [ "$code" = "401" ] || [ "$code" = "403" ]; then
-              echo "::error::权限不足：请把 $TOKEN_SOURCE 换成「Read, Write, & Delete」权限的 PAT"
-              echo "Docker Hub 明确拒绝 Read & Write 的 PAT 修改仓库介绍（access denied: insufficient scope）。"
-              echo "头像 → Account settings → Personal access tokens → Generate new token，"
-              echo "Access permissions 选「Read, Write, & Delete」，然后更新仓库 secret 并重跑本工作流。"
+          classic="https://hub.docker.com/v2/repositories/$DH_USER/$REPO/"
+          namespaced="https://hub.docker.com/v2/namespaces/$DH_USER/repositories/$REPO"
+
+          ok=0
+          if attempt "新令牌 + 经典路由" "Bearer $DH_ACCESS" "$classic"; then ok=1; fi
+          if [ "$ok" = "0" ]; then
+            if attempt "旧 JWT + 经典路由" "JWT $DH_JWT" "$classic"; then ok=1; fi
+          fi
+          if [ "$ok" = "0" ]; then
+            if attempt "新令牌 + 命名空间路由" "Bearer $DH_ACCESS" "$namespaced"; then ok=1; fi
+          fi
+
+          if [ "$ok" = "0" ]; then
+            echo "::error::三条提交路径全部失败（最后一条 $last_url → HTTP $last_code）"
+            if [ "$last_code" = "401" ] || [ "$last_code" = "403" ]; then
+              echo "Docker Hub 对「仓库元数据编辑」不接受 Read & Write 档的 PAT（access denied: insufficient scope）。"
+              echo "请到 Docker Hub → 头像 → Account settings → Personal access tokens 新建一个"
+              echo "Access permissions 为「Read, Write, & Delete」的令牌，写入仓库 secret $TOKEN_SOURCE 后重跑本工作流。"
             fi
             exit 1
           fi
-          echo "::add-mask::$DH_TOKEN"
-          echo "DH_AUTH=$auth" >> "$GITHUB_ENV"
 
       # 简介（搜索结果里显示的那一行）。它是可选字段，个别账号/仓库模型可能不接受，
       # 因此单独一个请求，失败了也只告警不中断 —— 正文才是必须同步的部分。
