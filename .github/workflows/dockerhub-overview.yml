@@ -53,11 +53,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # ⚠️ short 是仓库「简介」，Docker Hub 硬限制 **100 字节**（中文按 UTF-8 算 3 字节）。
+        # 首次同步时写成 119 / 121 字节，被接口一句 400 挡回：
+        #   {"fielderrors":{"description":"Exceeded max number of bytes 100 - actual 119"}}
+        # 保持每条 ≤ 100 字节并在下面用 iconv 截断兜底，改动时请一并复核。
         include:
           - service: api
-            short: '浮光图床后端 API：Hono + SQLite + sharp，支持本地 / S3 / WebDAV 多后端；需与 glimmer-web 成对部署'
+            short: '后端 API（Hono + SQLite + sharp），多后端，需与 glimmer-web 成对部署'
           - service: web
-            short: '浮光图床前端页面（Nuxt 3 SPA）+ 内置同源反向代理，唯一对外端口；需与 glimmer-api 成对部署'
+            short: '前端页面（Nuxt 3 SPA）+ 同源代理，需与 glimmer-api 成对部署'
     env:
       DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
       DH_TOKEN: ${{ secrets.DOCKERHUB_OVERVIEW_TOKEN || secrets.DOCKERHUB_TOKEN }}
@@ -175,7 +179,15 @@ jobs:
       - name: 同步 Short description（可选，失败不中断）
         if: ${{ env.DRY_RUN != 'true' }}
         run: |
-          payload=$(jq -nc --arg d "$SHORT" '{description: $d}')
+          # 简介硬限 100 字节，超长会 400。先按字节截到 100，再用 iconv -c 丢掉可能被
+          # 切掉一半的 UTF-8 字符（否则 jq 会因非法编码直接失败）。
+          short="$SHORT"
+          bytes=$(printf '%s' "$short" | wc -c)
+          if [ "$bytes" -gt 100 ]; then
+            short=$(printf '%s' "$short" | head -c 100 | iconv -f UTF-8 -t UTF-8 -c)
+            echo "::warning::简介超长（${bytes} 字节 > 100），已截断为：$short"
+          fi
+          payload=$(jq -nc --arg d "$short" '{description: $d}')
           code=$(curl -sS -o /tmp/resp2.json -w '%{http_code}' -X PATCH \
             "https://hub.docker.com/v2/repositories/$DH_USER/$REPO/" \
             -H "Authorization: $DH_AUTH" \
