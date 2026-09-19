@@ -3,18 +3,23 @@ name: dockerhub-overview
 # 把 docs/dockerhub/ 下的两份 overview 同步到 Docker Hub 对应仓库的「Full description」。
 #
 # 为什么走 Actions 而不是本地脚本：Docker Hub 的写接口需要 PAT，而本项目约定
-# PAT 只存在于仓库 secret（DOCKERHUB_USERNAME / DOCKERHUB_TOKEN）里，不落任何机器。
+# PAT 只存在于仓库 secret 里，不落任何机器。
 #
 # 触发方式：
 #   1) 修改 docs/dockerhub/** 推送到 main → 自动同步（改文案即上线，无需发版）
 #   2) Actions 页面手动触发 → 可随时重跑；dry_run 只校验凭据与文件，不提交
 #
-# 前置条件（与镜像发布共用一对 secret，通常无需额外配置）：
-#   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
-#   ⚠️ 该 PAT 需要「Read & Write」权限 —— 只读 token 对仓库元数据接口会 401/403。
+# ⚠️ 凭据要求（这是本工作流唯一容易卡住的地方）：
+#   改仓库介绍属于「仓库元数据编辑」，Docker Hub **拒绝 Read & Write 的 PAT**
+#   （返回 403 {"message":"access denied: insufficient scope"}），
+#   必须是 **Read, Write, & Delete** 权限的 Personal access token：
+#     Docker Hub → 头像 → Account settings → Personal access tokens → Generate new token
+#     Access permissions 选「Read, Write, & Delete」
+#   取值顺序：DOCKERHUB_OVERVIEW_TOKEN（推荐，专用最小权限）> DOCKERHUB_TOKEN（与镜像发布共用）。
+#   若沿用一个 secret，注意镜像发布只要 Read & Write，而本工作流需要更高的那一档。
 #
-# 与 docker-publish 的关系：本工作流只改仓库介绍文案，不构建、不推送镜像，
-# 因此不会被它自己的 paths 规则带起一次镜像发布（publish 只认 apps/** 等路径）。
+# 与 docker-publish 的关系：本工作流只改仓库介绍文案，不构建、不推送镜像 ——
+# publish 的 paths 只认 apps/** 等构建相关路径，因此不会被这里带起一次镜像发布。
 
 on:
   push:
@@ -50,7 +55,8 @@ jobs:
             short: '浮光图床前端页面（Nuxt 3 SPA）+ 内置同源反向代理，唯一对外端口；需与 glimmer-api 成对部署'
     env:
       DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-      DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      DH_TOKEN: ${{ secrets.DOCKERHUB_OVERVIEW_TOKEN || secrets.DOCKERHUB_TOKEN }}
+      TOKEN_SOURCE: ${{ secrets.DOCKERHUB_OVERVIEW_TOKEN && 'DOCKERHUB_OVERVIEW_TOKEN' || 'DOCKERHUB_TOKEN' }}
       REPO: glimmer-${{ matrix.service }}
       DOC: docs/dockerhub/glimmer-${{ matrix.service }}.md
       SHORT: ${{ matrix.short }}
@@ -63,12 +69,13 @@ jobs:
         run: |
           missing=""
           [ -z "$DH_USER" ] && missing="$missing DOCKERHUB_USERNAME"
-          [ -z "$DH_TOKEN" ] && missing="$missing DOCKERHUB_TOKEN"
+          [ -z "$DH_TOKEN" ] && missing="$missing DOCKERHUB_OVERVIEW_TOKEN(或 DOCKERHUB_TOKEN)"
           if [ -n "$missing" ]; then
             echo "::error::缺少仓库 secret：${missing# }"
             exit 1
           fi
           [ -f "$DOC" ] || { echo "::error::找不到文档 $DOC"; exit 1; }
+          echo "凭据来源：$TOKEN_SOURCE（Docker Hub 用户 $DH_USER）"
           echo "待同步：$DOC（$(wc -c < "$DOC") 字节）→ $DH_USER/$REPO"
           echo "标题行：$(head -1 "$DOC")"
 
@@ -80,7 +87,7 @@ jobs:
             -d "$(jq -nc --arg u "$DH_USER" --arg p "$DH_TOKEN" '{username:$u,password:$p}')" \
             | jq -r '.token // empty')
           if [ -z "$token" ]; then
-            echo "::error::Docker Hub 登录失败 —— DOCKERHUB_TOKEN 必须是 Personal access token，不能用登录密码"
+            echo "::error::Docker Hub 登录失败 —— 凭据必须是 Personal access token，不能用登录密码"
             exit 1
           fi
           echo "::add-mask::$token"
@@ -95,21 +102,41 @@ jobs:
             jq -Rs '{full_description: .}' "$DOC" | cut -c1-120
             exit 0
           fi
+
           # -Rs：把整份 markdown 当成一个 JSON 字符串，换行由 jq 转义，payload 始终是单行
           payload=$(jq -Rs '{full_description: .}' "$DOC")
-          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X PATCH \
-            "https://hub.docker.com/v2/repositories/$DH_USER/$REPO/" \
-            -H "Authorization: JWT $DH_JWT" \
-            -H 'Content-Type: application/json' \
-            --data-binary "$payload")
-          echo "PATCH $DH_USER/$REPO/full_description → HTTP $code"
-          if [ "$code" != "200" ]; then
-            cat /tmp/resp.json || true
+
+          # 两种认证都试一遍：先用 /users/login/ 换来的 JWT（官方文档的写法），
+          # 若被拒再直接把 PAT 当 Bearer ——不同代的令牌在这套接口上表现并不一致。
+          try_patch() {
+            curl -sS -o /tmp/resp.json -w '%{http_code}' -X PATCH \
+              "https://hub.docker.com/v2/repositories/$DH_USER/$REPO/" \
+              -H "Authorization: $1" \
+              -H 'Content-Type: application/json' \
+              --data-binary "$payload"
+          }
+
+          auth=""
+          code=000
+          for candidate in "JWT $DH_JWT" "Bearer $DH_TOKEN"; do
+            code=$(try_patch "$candidate")
+            echo "PATCH $DH_USER/$REPO（$(echo "$candidate" | cut -d' ' -f1) 认证）→ HTTP $code"
+            if [ "$code" = "200" ]; then auth="$candidate"; break; fi
+            cat /tmp/resp.json 2>/dev/null || true
+            echo
+          done
+
+          if [ -z "$auth" ]; then
             if [ "$code" = "401" ] || [ "$code" = "403" ]; then
-              echo "::error::权限不足：DOCKERHUB_TOKEN 需为「Read & Write」的 PAT（Docker Hub → Account settings → Personal access tokens）"
+              echo "::error::权限不足：请把 $TOKEN_SOURCE 换成「Read, Write, & Delete」权限的 PAT"
+              echo "Docker Hub 明确拒绝 Read & Write 的 PAT 修改仓库介绍（access denied: insufficient scope）。"
+              echo "头像 → Account settings → Personal access tokens → Generate new token，"
+              echo "Access permissions 选「Read, Write, & Delete」，然后更新仓库 secret 并重跑本工作流。"
             fi
             exit 1
           fi
+          echo "::add-mask::$DH_TOKEN"
+          echo "DH_AUTH=$auth" >> "$GITHUB_ENV"
 
       # 简介（搜索结果里显示的那一行）。它是可选字段，个别账号/仓库模型可能不接受，
       # 因此单独一个请求，失败了也只告警不中断 —— 正文才是必须同步的部分。
@@ -119,12 +146,12 @@ jobs:
           payload=$(jq -nc --arg d "$SHORT" '{description: $d}')
           code=$(curl -sS -o /tmp/resp2.json -w '%{http_code}' -X PATCH \
             "https://hub.docker.com/v2/repositories/$DH_USER/$REPO/" \
-            -H "Authorization: JWT $DH_JWT" \
+            -H "Authorization: $DH_AUTH" \
             -H 'Content-Type: application/json' \
             --data-binary "$payload")
           echo "PATCH $DH_USER/$REPO/description → HTTP $code"
           if [ "$code" != "200" ]; then
-            cat /tmp/resp2.json || true
+            cat /tmp/resp2.json 2>/dev/null || true
             echo "::warning::简介未同步（HTTP $code）—— 正文已同步，可稍后在 Docker Hub 网页里手填这一行"
           fi
 
