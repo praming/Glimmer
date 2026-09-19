@@ -1,0 +1,145 @@
+name: dockerhub-overview
+
+# 把 docs/dockerhub/ 下的两份 overview 同步到 Docker Hub 对应仓库的「Full description」。
+#
+# 为什么走 Actions 而不是本地脚本：Docker Hub 的写接口需要 PAT，而本项目约定
+# PAT 只存在于仓库 secret（DOCKERHUB_USERNAME / DOCKERHUB_TOKEN）里，不落任何机器。
+#
+# 触发方式：
+#   1) 修改 docs/dockerhub/** 推送到 main → 自动同步（改文案即上线，无需发版）
+#   2) Actions 页面手动触发 → 可随时重跑；dry_run 只校验凭据与文件，不提交
+#
+# 前置条件（与镜像发布共用一对 secret，通常无需额外配置）：
+#   DOCKERHUB_USERNAME / DOCKERHUB_TOKEN
+#   ⚠️ 该 PAT 需要「Read & Write」权限 —— 只读 token 对仓库元数据接口会 401/403。
+#
+# 与 docker-publish 的关系：本工作流只改仓库介绍文案，不构建、不推送镜像，
+# 因此不会被它自己的 paths 规则带起一次镜像发布（publish 只认 apps/** 等路径）。
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'docs/dockerhub/**'
+      - '.github/workflows/dockerhub-overview.yml'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: '只校验凭据与文档，不实际提交'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+        default: 'false'
+
+concurrency:
+  group: dockerhub-overview
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: api
+            short: '浮光图床后端 API：Hono + SQLite + sharp，支持本地 / S3 / WebDAV 多后端；需与 glimmer-web 成对部署'
+          - service: web
+            short: '浮光图床前端页面（Nuxt 3 SPA）+ 内置同源反向代理，唯一对外端口；需与 glimmer-api 成对部署'
+    env:
+      DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+      DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      REPO: glimmer-${{ matrix.service }}
+      DOC: docs/dockerhub/glimmer-${{ matrix.service }}.md
+      SHORT: ${{ matrix.short }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # secret 名写错时，登录只会抛一句含糊的 401，先自己检查一遍
+      - name: 检查凭据与文档
+        run: |
+          missing=""
+          [ -z "$DH_USER" ] && missing="$missing DOCKERHUB_USERNAME"
+          [ -z "$DH_TOKEN" ] && missing="$missing DOCKERHUB_TOKEN"
+          if [ -n "$missing" ]; then
+            echo "::error::缺少仓库 secret：${missing# }"
+            exit 1
+          fi
+          [ -f "$DOC" ] || { echo "::error::找不到文档 $DOC"; exit 1; }
+          echo "待同步：$DOC（$(wc -c < "$DOC") 字节）→ $DH_USER/$REPO"
+          echo "标题行：$(head -1 "$DOC")"
+
+      - name: 登录 Docker Hub
+        run: |
+          set -e
+          token=$(curl -fsS -X POST https://hub.docker.com/v2/users/login/ \
+            -H 'Content-Type: application/json' \
+            -d "$(jq -nc --arg u "$DH_USER" --arg p "$DH_TOKEN" '{username:$u,password:$p}')" \
+            | jq -r '.token // empty')
+          if [ -z "$token" ]; then
+            echo "::error::Docker Hub 登录失败 —— DOCKERHUB_TOKEN 必须是 Personal access token，不能用登录密码"
+            exit 1
+          fi
+          echo "::add-mask::$token"
+          echo "DH_JWT=$token" >> "$GITHUB_ENV"
+          echo "登录成功（JWT 已获取并掩码）"
+
+      - name: 同步 Full description
+        run: |
+          set -e
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "dry_run=true，跳过提交。payload 演示（前 120 字符）："
+            jq -Rs '{full_description: .}' "$DOC" | cut -c1-120
+            exit 0
+          fi
+          # -Rs：把整份 markdown 当成一个 JSON 字符串，换行由 jq 转义，payload 始终是单行
+          payload=$(jq -Rs '{full_description: .}' "$DOC")
+          code=$(curl -sS -o /tmp/resp.json -w '%{http_code}' -X PATCH \
+            "https://hub.docker.com/v2/repositories/$DH_USER/$REPO/" \
+            -H "Authorization: JWT $DH_JWT" \
+            -H 'Content-Type: application/json' \
+            --data-binary "$payload")
+          echo "PATCH $DH_USER/$REPO/full_description → HTTP $code"
+          if [ "$code" != "200" ]; then
+            cat /tmp/resp.json || true
+            if [ "$code" = "401" ] || [ "$code" = "403" ]; then
+              echo "::error::权限不足：DOCKERHUB_TOKEN 需为「Read & Write」的 PAT（Docker Hub → Account settings → Personal access tokens）"
+            fi
+            exit 1
+          fi
+
+      # 简介（搜索结果里显示的那一行）。它是可选字段，个别账号/仓库模型可能不接受，
+      # 因此单独一个请求，失败了也只告警不中断 —— 正文才是必须同步的部分。
+      - name: 同步 Short description（可选，失败不中断）
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: |
+          payload=$(jq -nc --arg d "$SHORT" '{description: $d}')
+          code=$(curl -sS -o /tmp/resp2.json -w '%{http_code}' -X PATCH \
+            "https://hub.docker.com/v2/repositories/$DH_USER/$REPO/" \
+            -H "Authorization: JWT $DH_JWT" \
+            -H 'Content-Type: application/json' \
+            --data-binary "$payload")
+          echo "PATCH $DH_USER/$REPO/description → HTTP $code"
+          if [ "$code" != "200" ]; then
+            cat /tmp/resp2.json || true
+            echo "::warning::简介未同步（HTTP $code）—— 正文已同步，可稍后在 Docker Hub 网页里手填这一行"
+          fi
+
+      # 读回公开接口做复核：避免出现「请求 200 但内容没变」这种最难排查的假成功
+      - name: 读回复核
+        if: ${{ env.DRY_RUN != 'true' }}
+        run: |
+          actual=$(curl -fsS "https://hub.docker.com/v2/repositories/$DH_USER/$REPO/" | jq -r '.full_description // ""')
+          want=$(cat "$DOC")
+          # 只忽略「行尾空白」的差异，其余必须逐字一致
+          actual="${actual%"${actual##*[![:space:]]}"}"
+          want="${want%"${want##*[![:space:]]}"}"
+          if [ "$actual" = "$want" ]; then
+            echo "✅ $DH_USER/$REPO 的 overview 与 $DOC 逐字一致（$(printf '%s' "$actual" | wc -c) 字节）"
+          else
+            echo "::error::读回内容与本地文件不一致（远端 $(printf '%s' "$actual" | wc -c) 字节 / 本地 $(wc -c < "$DOC") 字节）"
+            exit 1
+          fi
