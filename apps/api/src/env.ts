@@ -217,11 +217,20 @@ export const paths = {
   uploads: resolvePath(env.LOCAL_STORAGE_DIR),
   /** 上传临时目录 */
   temp: resolvePath(env.TEMP_DIR),
+  /**
+   * 头像目录：**刻意放在数据库同级**，而不是塞进存储后端。
+   *
+   * 头像不是图库内容 —— 它不该占用存储后端，也不该随「图片直链」一起被重建。
+   * 放这里有两个直接好处：① 按数据目录备份时自动包含（与 `.secrets.json` 同理）；
+   * ② 对外地址与域名 / 路径前缀**完全无关**（恒由 `/api/users/:id/avatar` 直出），
+   * 所以改域名、改前缀都不会让它失效。
+   */
+  avatars: path.join(path.dirname(resolvePath(env.DATABASE_URL)), 'avatars'),
 } as const
 
 /** 启动时保证运行所需目录存在 */
 export function ensureRuntimeDirs(): void {
-  for (const dir of [path.dirname(paths.database), paths.uploads, paths.temp]) {
+  for (const dir of [path.dirname(paths.database), paths.uploads, paths.temp, paths.avatars]) {
     fs.mkdirSync(dir, { recursive: true })
   }
 }

@@ -10,6 +10,7 @@ import {
 } from '@glimmer/shared'
 import { and, desc, eq, isNull } from 'drizzle-orm'
 import { apiTokens, db, users, type ApiTokenRow } from '../db'
+import { resolveAvatarUrl } from '../services/avatar'
 import { randomToken, sha256Hex } from './crypto'
 import { badRequest } from './errors'
 
@@ -141,6 +142,7 @@ export function resolveApiToken(token: string): SessionUserDTO | null {
       username: users.username,
       role: users.role,
       avatarUrl: users.avatarUrl,
+      avatarUpdatedAt: users.avatarUpdatedAt,
       sessionDays: users.sessionDays,
       disabled: users.disabled,
     })
@@ -169,7 +171,12 @@ export function resolveApiToken(token: string): SessionUserDTO | null {
     id: row.userId,
     username: row.username,
     role: row.role,
-    avatarUrl: row.avatarUrl ?? null,
+    // 别名是 userId，而 resolveAvatarUrl 收的是 { id }，此处显式对齐
+    avatarUrl: resolveAvatarUrl({
+      id: row.userId,
+      avatarUrl: row.avatarUrl,
+      avatarUpdatedAt: row.avatarUpdatedAt,
+    }),
     sessionDays: row.sessionDays ?? null,
   }
 }

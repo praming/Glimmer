@@ -59,9 +59,23 @@ export const useAuthStore = defineStore('auth', () => {
     preferences.value = { ...DEFAULT_PREFERENCES }
   }
 
+  /**
+   * 保存个人偏好。
+   *
+   * **乐观更新**：先把改动落到本地，界面立刻响应；请求失败再回滚成原值并抛出。
+   * 这里全是开关类设置（主题、字体、上传选项），等一次服务端往返再变颜色会有明显的
+   * 迟滞感；回滚则保证「界面显示的」与「服务端存着的」最终一致。
+   */
   async function updatePreferences(patch: Partial<UserPreferences>): Promise<UserPreferences> {
-    const saved = await api.patch<UserPreferences>('/me/preferences', patch)
-    preferences.value = { ...preferences.value, ...saved }
+    const previous = { ...preferences.value }
+    preferences.value = { ...previous, ...patch }
+    try {
+      const saved = await api.patch<UserPreferences>('/me/preferences', patch)
+      preferences.value = { ...preferences.value, ...saved }
+    } catch (error) {
+      preferences.value = previous
+      throw error
+    }
     return preferences.value
   }
 
@@ -75,6 +89,33 @@ export const useAuthStore = defineStore('auth', () => {
       '/auth/me',
       patch,
     )
+    user.value = result.user
+    return result.user
+  }
+
+  /**
+   * 上传本地头像。
+   *
+   * 头像走**独立通道**：不经过图库、不写图片直链快照，服务端裁成 1:1 小图后
+   * 按「用户 id + 版本号」现算地址 —— 因此改对外域名 / 路径前缀都不会让它失效。
+   * 详见 `apps/api/src/services/avatar.ts`。
+   */
+  async function uploadAvatar(file: File): Promise<SessionUserDTO> {
+    if (!user.value) throw new Error('登录状态已失效，请重新登录')
+    const form = new FormData()
+    form.append('file', file)
+    const result = await api.upload<{ user: SessionUserDTO }>(
+      `/users/${user.value.id}/avatar`,
+      form,
+    )
+    user.value = result.user
+    return result.user
+  }
+
+  /** 清除头像（本地文件与外链一起清），回到用户名首字母占位 */
+  async function removeAvatar(): Promise<SessionUserDTO> {
+    if (!user.value) throw new Error('登录状态已失效，请重新登录')
+    const result = await api.del<{ user: SessionUserDTO }>(`/users/${user.value.id}/avatar`)
     user.value = result.user
     return result.user
   }
@@ -103,6 +144,8 @@ export const useAuthStore = defineStore('auth', () => {
     logout,
     updatePreferences,
     updateProfile,
+    uploadAvatar,
+    removeAvatar,
     changePassword,
   }
 })

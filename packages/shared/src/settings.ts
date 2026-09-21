@@ -231,5 +231,13 @@ export function mergePreferences(
     theme: patch.theme ?? base.theme,
     fontSansZh: patch.fontSansZh ?? base.fontSansZh,
     fontSansEn: patch.fontSansEn ?? base.fontSansEn,
+    // 数组整体替换而非合并：用户取消勾选某个后端时必须真的少一项，
+    // 合并会让「取消」这个动作永远无法生效。空数组是合法值（= 未设置，回退全局默认）。
+    uploadBackends: patch.uploadBackends ?? base.uploadBackends,
+    uploadFormats: patch.uploadFormats ?? base.uploadFormats,
+    // ⚠️ 这里**不能用 `??`**：`null` 是「重置为未设置」的真实取值，
+    // 而 `??` 会把 null 当成空值回退到 base，导致「恢复默认」永远无法生效。
+    uploadKeepOriginal:
+      patch.uploadKeepOriginal !== undefined ? patch.uploadKeepOriginal : base.uploadKeepOriginal,
   }
 }

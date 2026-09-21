@@ -286,6 +286,10 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
   theme: 'system',
   fontSansZh: '',
   fontSansEn: '',
+  // 空数组 / null = 「没选过」，具体取值回退到全局默认设置
+  uploadBackends: [],
+  uploadFormats: [],
+  uploadKeepOriginal: null,
 }
 
 /**
@@ -333,6 +337,25 @@ export type SessionDays = (typeof SESSION_DAY_OPTIONS)[number]
 export const DEFAULT_SESSION_DAYS: SessionDays = 7
 
 export const UPLOAD_MAX_FILES_PER_REQUEST = 20
+
+/* ------------------------------------------------------------------ */
+/* 本地头像                                                             */
+/* ------------------------------------------------------------------ */
+
+/*
+ * 头像走独立通道（上传 → 服务端裁成 1:1 → 按「用户 id + 版本号」现算地址），
+ * 不经过图库、不写图片直链快照，因此不会因为改对外域名 / 路径前缀而失效。
+ * 实现见 apps/api/src/services/avatar.ts。
+ *
+ * 这两项前后端都要用（前端做上传前的预校验，后端是权威校验），
+ * 放 shared 是为了避免两边各写一份、改一处漏一处。
+ */
+
+/** 头像边长（px）。界面最大显示约 96px，留了约 2.7 倍余量给高分屏 */
+export const AVATAR_SIZE = 256
+
+/** 单文件上限：头像不需要很大，5 MB 足以覆盖任何手机原图 */
+export const AVATAR_MAX_BYTES = 5 * 1024 * 1024
 
 /* ------------------------------------------------------------------ */
 /* P3-1 秒传去重                                                        */

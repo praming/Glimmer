@@ -57,7 +57,14 @@ export const updateUserSchema = z
   })
   .refine((v) => Object.keys(v).length > 0, { message: '没有需要更新的字段' })
 
-/** 头像地址：支持 http(s) 外链、站内路径（本图库图片），空串表示恢复默认占位 */
+/**
+ * 头像地址：支持 http(s) 外链或站内路径，空串表示清除头像恢复默认占位。
+ *
+ * ⚠️ 这里只管**外链**。本地上传的头像不经过这个字段，而是存成
+ * 「用户 id + 版本号」由服务端现算地址（见 `apps/api/src/services/avatar.ts`），
+ * 因此不受对外域名 / 路径前缀变更影响。
+ * 外链与本地头像**互斥**：设了外链就会清掉本地文件，上传本地图就会清空外链。
+ */
 export const avatarUrlSchema = z
   .string()
   .trim()
@@ -103,6 +110,10 @@ export const preferencesSchema = z.object({
   theme: themeSchema.optional(),
   fontSansZh: fontFamilySchema.optional(),
   fontSansEn: fontFamilySchema.optional(),
+  // 上传页的三个选项：跟账户走（v1.0.5 起）。空数组 = 未设置 → 回退全局默认。
+  uploadBackends: z.array(z.string().min(1)).max(20).optional(),
+  uploadFormats: z.array(outputFormatSchema).max(5).optional(),
+  uploadKeepOriginal: z.boolean().nullable().optional(),
 })
 
 /* ------------------------------------------------------------------ */

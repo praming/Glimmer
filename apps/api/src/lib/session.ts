@@ -5,6 +5,7 @@ import type { Context, MiddlewareHandler } from 'hono'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
 import { db, sessions, users } from '../db'
 import { env } from '../env'
+import { resolveAvatarUrl } from '../services/avatar'
 import type { AppEnv, AuthMethod } from './context'
 import { randomToken, sha256Hex } from './crypto'
 import { forbidden, unauthorized } from './errors'
@@ -67,6 +68,7 @@ export function resolveSession(token: string): ResolvedSession | null {
       username: users.username,
       role: users.role,
       avatarUrl: users.avatarUrl,
+      avatarUpdatedAt: users.avatarUpdatedAt,
       sessionDays: users.sessionDays,
       disabled: users.disabled,
     })
@@ -91,7 +93,12 @@ export function resolveSession(token: string): ResolvedSession | null {
       id: row.userId,
       username: row.username,
       role: row.role,
-      avatarUrl: row.avatarUrl ?? null,
+      // 别名是 userId，而 resolveAvatarUrl 收的是 { id }，此处显式对齐
+      avatarUrl: resolveAvatarUrl({
+        id: row.userId,
+        avatarUrl: row.avatarUrl,
+        avatarUpdatedAt: row.avatarUpdatedAt,
+      }),
       sessionDays: row.sessionDays ?? null,
     },
   }

@@ -6,8 +6,10 @@ import { Camera, Clock, ShieldCheck, Trash2 } from 'lucide-vue-next'
 const auth = useAuthStore()
 const toast = useToast()
 
-const form = reactive({ username: '', avatarUrl: '' })
+/** 只保留用户名：头像走独立通道、立即生效，不参与「保存资料」的批量提交 */
+const form = reactive({ username: '' })
 const saving = ref(false)
+const removingAvatar = ref(false)
 const error = ref('')
 const pickerOpen = ref(false)
 
@@ -47,16 +49,11 @@ watch(
   (user) => {
     if (!user) return
     form.username = user.username
-    form.avatarUrl = user.avatarUrl ?? ''
   },
   { immediate: true },
 )
 
-const dirty = computed(
-  () =>
-    form.username.trim() !== (auth.user?.username ?? '') ||
-    form.avatarUrl.trim() !== (auth.user?.avatarUrl ?? ''),
-)
+const dirty = computed(() => form.username.trim() !== (auth.user?.username ?? ''))
 
 const usernameError = computed(() => {
   const value = form.username.trim()
@@ -69,7 +66,6 @@ const usernameError = computed(() => {
 
 function reset(): void {
   form.username = auth.user?.username ?? ''
-  form.avatarUrl = auth.user?.avatarUrl ?? ''
   error.value = ''
 }
 
@@ -82,16 +78,31 @@ async function submit(): Promise<void> {
 
   saving.value = true
   try {
-    const renamed = form.username.trim() !== (auth.user?.username ?? '')
-    await auth.updateProfile({
-      username: form.username.trim(),
-      avatarUrl: form.avatarUrl.trim(),
-    })
-    toast.success(renamed ? '用户名与头像已更新' : '头像已更新')
+    await auth.updateProfile({ username: form.username.trim() })
+    toast.success('用户名已更新')
   } catch (err) {
     error.value = (err as Error).message
   } finally {
     saving.value = false
+  }
+}
+
+/**
+ * 移除头像：立即生效，不改 `dirty`。
+ *
+ * 与「更换头像」同理 —— 头像不该拖着一颗「未保存」的状态，否则用户改完头像
+ * 随手点「撤销改动」会把头像一起撤掉，非常反直觉。
+ */
+async function clearAvatar(): Promise<void> {
+  if (removingAvatar.value) return
+  removingAvatar.value = true
+  try {
+    await auth.removeAvatar()
+    toast.success('头像已移除', '已恢复为用户名首字母')
+  } catch (err) {
+    toast.error('移除失败', (err as Error).message)
+  } finally {
+    removingAvatar.value = false
   }
 }
 </script>
@@ -107,7 +118,7 @@ async function submit(): Promise<void> {
           title="更换头像"
           @click="pickerOpen = true"
         >
-          <UserAvatar :src="form.avatarUrl || null" :name="form.username" size="xl" />
+          <UserAvatar :src="auth.avatarUrl" :name="form.username" size="xl" />
           <span
             class="absolute inset-0 flex items-center justify-center rounded-full bg-slate-950/45 opacity-0 transition-opacity duration-250 group-hover:opacity-100"
           >
@@ -121,13 +132,19 @@ async function submit(): Promise<void> {
               <Camera class="h-3.5 w-3.5" />
               更换头像
             </AppButton>
-            <AppButton v-if="form.avatarUrl" variant="ghost" size="sm" @click="form.avatarUrl = ''">
-              <Trash2 class="h-3.5 w-3.5" />
+            <AppButton
+              v-if="auth.avatarUrl"
+              variant="ghost"
+              size="sm"
+              :loading="removingAvatar"
+              @click="clearAvatar"
+            >
+              <Trash2 v-if="!removingAvatar" class="h-3.5 w-3.5" />
               移除
             </AppButton>
           </div>
           <p class="text-[11px] leading-relaxed text-muted-foreground">
-            支持填入图片链接，或从你的图库中挑一张。始终按 1:1 居中裁切显示。
+            头像上传后保存在服务端并跟随账户，换设备登录、改绑访问域名都不会失效。
           </p>
         </div>
       </div>
@@ -192,6 +209,6 @@ async function submit(): Promise<void> {
       </div>
     </template>
 
-    <AvatarPicker v-model:open="pickerOpen" v-model="form.avatarUrl" :username="form.username" />
+    <AvatarPicker v-model:open="pickerOpen" :username="form.username" />
   </AppCard>
 </template>

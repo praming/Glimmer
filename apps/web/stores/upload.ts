@@ -4,9 +4,9 @@ import type {
   OutputFormat,
   UploadAccepted,
   UploadCheckResult,
+  UserPreferences,
 } from '@glimmer/shared'
 import { EXT_TO_MIME, buildCopyText, randomString, sha256Hex } from '@glimmer/shared'
-import { useLocalStorage } from '@vueuse/core'
 import { defineStore } from 'pinia'
 import { useAuthStore } from './auth'
 import { useOptionsStore } from './options'
@@ -53,38 +53,68 @@ export const useUploadStore = defineStore('upload', () => {
   const lastSummary = ref<{ total: number; succeeded: number; failed: number } | null>(null)
 
   /* ------------------------------------------------------------------ */
-  /* 本次上传选项（记住上次选择）                                          */
+  /* 本次上传选项（跟随账户）                                              */
   /* ------------------------------------------------------------------ */
 
-  const formats = useLocalStorage<OutputFormat[]>('glimmer-upload-formats', [])
-  const backends = useLocalStorage<string[]>('glimmer-upload-backends', [])
-  const keepOriginal = useLocalStorage<boolean>('glimmer-upload-keep-original', false)
-  const optionsBound = ref(false)
+  /*
+   * 三个选项都写进**账户偏好**（`auth.preferences.upload*`），换设备登录也会带上 ——
+   * 以前它们只躺在本机 localStorage 里，换个浏览器 / 换台机器就得重新选一遍。
+   *
+   * ⚠️ 空数组 / null 表示「从没选过」，此时回落到管理员设定的全局默认值。
+   * 不能用「取值恰好等于默认值」来表达「没选过」：那样用户把选项调回默认值之后
+   * 就与「从未设置」无法区分，管理员以后改全局默认也推不动。
+   */
+  const optionsStore = useOptionsStore()
+
+  /** 管理员设定的全局默认；公开设置还没加载时为 undefined */
+  const globalProcessing = computed(() => optionsStore.data?.processing)
+
+  /** 选项是「随手一改」的交互：乐观更新让界面立刻响应，失败则静默回滚 */
+  function saveOption(patch: Partial<UserPreferences>): void {
+    void auth.updatePreferences(patch).catch(() => undefined)
+  }
+
+  const formats = computed<OutputFormat[]>({
+    get: () =>
+      auth.preferences.uploadFormats.length > 0
+        ? auth.preferences.uploadFormats
+        : (globalProcessing.value?.outputFormats ?? []),
+    set: (value) => saveOption({ uploadFormats: value }),
+  })
+
+  const backends = computed<string[]>({
+    get: () =>
+      auth.preferences.uploadBackends.length > 0
+        ? auth.preferences.uploadBackends
+        : (optionsStore.data?.defaultBackends ?? []),
+    set: (value) => saveOption({ uploadBackends: value }),
+  })
+
+  const keepOriginal = computed<boolean>({
+    get: () => auth.preferences.uploadKeepOriginal ?? globalProcessing.value?.keepOriginal ?? false,
+    set: (value) => saveOption({ uploadKeepOriginal: value }),
+  })
 
   /**
-   * 加载公开设置并初始化选项。
-   * 首次进入时采用全局默认值，之后沿用用户上次的选择。
+   * 加载公开设置，并清理已失效的后端选择。
+   *
+   * 选项本身已经存在账户里，这里不再需要「初始化」—— 只负责丢弃管理员已禁用 / 已删除
+   * 的后端。不做这一步的话，用户会一直带着一个永远选不中的 id，界面看起来是空的，
+   * 上传时才报「没有可用的存储后端」。
    */
   async function ensureOptions(): Promise<void> {
-    const options = useOptionsStore()
-    const data = await options.load()
+    const data = await optionsStore.load()
     if (!data) return
 
-    const validBackends = new Set(data.backends.map((b) => b.id))
+    const saved = auth.preferences.uploadBackends
+    if (saved.length === 0) return
 
-    if (!optionsBound.value) {
-      if (formats.value.length === 0) formats.value = [...data.processing.outputFormats]
-      if (backends.value.length === 0) backends.value = [...data.defaultBackends]
-      keepOriginal.value = data.processing.keepOriginal
-      optionsBound.value = true
+    const valid = new Set(data.backends.map((b) => b.id))
+    const filtered = saved.filter((id) => valid.has(id))
+    if (filtered.length !== saved.length) {
+      // 全部失效时回落到空数组 = 重新采用全局默认，而不是留下一个空选择
+      saveOption({ uploadBackends: filtered })
     }
-
-    // 丢弃已禁用 / 已删除的后端
-    const filtered = backends.value.filter((id) => validBackends.has(id))
-    if (filtered.length !== backends.value.length) {
-      backends.value = filtered.length > 0 ? filtered : [...data.defaultBackends]
-    }
-    if (formats.value.length === 0) formats.value = [...data.processing.outputFormats]
   }
 
   const activeCount = computed(

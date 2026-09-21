@@ -26,6 +26,7 @@ import {
   setSessionCookie,
 } from '../lib/session'
 import { revokeUserTokens } from '../lib/tokens'
+import { removeAvatarFile, resolveAvatarUrl } from '../services/avatar'
 import { getUserPreferences } from '../services/settings'
 
 export const authRoutes = new Hono<AppEnv>()
@@ -67,7 +68,7 @@ authRoutes.post('/login', async (c) => {
       id: user.id,
       username: user.username,
       role: user.role,
-      avatarUrl: user.avatarUrl ?? null,
+      avatarUrl: resolveAvatarUrl(user),
       sessionDays: user.sessionDays ?? null,
     },
     preferences: getUserPreferences(user.id),
@@ -124,8 +125,18 @@ authRoutes.patch('/me', requireAuth, async (c) => {
   }
 
   if (payload.avatarUrl !== undefined) {
-    // 空串表示清空头像，回落到首字母占位
-    patch.avatarUrl = payload.avatarUrl === '' ? null : payload.avatarUrl
+    const next = payload.avatarUrl.trim()
+    if (next === '') {
+      // 空串 = 清除头像：外链与本地文件一起清，真正回到用户名首字母占位
+      patch.avatarUrl = null
+      patch.avatarUpdatedAt = null
+    } else {
+      // 外链与本地头像互斥：显式指定外链即放弃本地上传的那张
+      // （两个来源同时存在会让「到底显示哪个」变得不可预测，见 services/avatar.ts）
+      patch.avatarUrl = next
+      patch.avatarUpdatedAt = null
+      await removeAvatarFile(me.id)
+    }
   }
 
   if (payload.sessionDays !== undefined) {
@@ -147,7 +158,7 @@ authRoutes.patch('/me', requireAuth, async (c) => {
       id: row.id,
       username: row.username,
       role: row.role,
-      avatarUrl: row.avatarUrl ?? null,
+      avatarUrl: resolveAvatarUrl(row),
       sessionDays: row.sessionDays ?? null,
     },
     sessionExpiresAt,

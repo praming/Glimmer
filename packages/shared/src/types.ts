@@ -256,6 +256,24 @@ export interface UserPreferences {
   fontSansZh: string
   /** 英文与数字字体栈，留空使用内置默认 */
   fontSansEn: string
+  /**
+   * 上传页「写入后端」的上次选择。
+   *
+   * 空数组 = **没选过**（而不是「选了 0 个」），此时回退到全局默认值
+   * （`GlobalSettings.defaultBackends`）。用「空 = 未设置」是为了让老账号在
+   * 首次读取时自然拿到全局默认，不需要额外的迁移。
+   */
+  uploadBackends: string[]
+  /** 上传页「输出格式」的上次选择；空数组 = 未设置，回退全局默认 */
+  uploadFormats: OutputFormat[]
+  /**
+   * 上传页「保留原图」的上次选择。
+   *
+   * 用 `null` 而不是 `false` 表示「未设置」——`false` 是一个真实的用户选择
+   * （明确不要保留原图），不能与「从没动过这个开关」混为一谈：后者应当跟随
+   * 全局默认值，而全局默认值可能正是 `true`。
+   */
+  uploadKeepOriginal: boolean | null
 }
 
 /* ------------------------------------------------------------------ */

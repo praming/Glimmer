@@ -26,6 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
   role          TEXT NOT NULL DEFAULT 'member',
   disabled      INTEGER NOT NULL DEFAULT 0,
   avatar_url    TEXT,
+  -- v1.0.5 起：本地头像的版本号；NULL = 没上传过（avatar_url 则只存外部链接）
+  avatar_updated_at TEXT,
   session_days  INTEGER,
   created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
   updated_at    TEXT
@@ -189,8 +191,13 @@ function applyLightMigrations(): void {
   addColumn('storage_records', 'last_attempt_at', 'TEXT')
   addColumn('storage_records', 'next_retry_at', 'TEXT')
 
-  // 个人资料：头像地址（外部 URL 或本图库图片直链）
+  // 个人资料：头像地址（v1.0.5 起**只存外部链接**；本图库头像改用下面那列）
   addColumn('users', 'avatar_url', 'TEXT')
+  // v1.0.5：本地头像的版本号（NULL = 没上传过）。旧的 avatar_url 里可能还留着
+  // 「本图库图片直链」的历史值，那些是上传当时的快照，改过域名 / 前缀后必然失效
+  // （`rebuild-urls` 也从不重建它）。此处不强行改写这类历史值：它们会被当成普通外链
+  // 显示，加载失败时前端回落到首字母；用户重新上传一次即可彻底脱离快照。
+  addColumn('users', 'avatar_updated_at', 'TEXT')
   // 会话有效期（天）：NULL 表示跟随服务端默认值 SESSION_TTL_DAYS
   addColumn('users', 'session_days', 'INTEGER')
 

@@ -108,13 +108,12 @@ async function updateCopyFormat(value: string): Promise<void> {
   }
 }
 
-async function updateTheme(value: string): Promise<void> {
+/**
+ * 主题：`setMode` 内部已经负责把值写进账户偏好（失败静默），这里不用再发一次请求。
+ * 立即生效 —— 同步失败也不该阻塞本机切换。
+ */
+function updateTheme(value: string): void {
   setMode(value as ThemePreference)
-  try {
-    await auth.updatePreferences({ theme: value as ThemePreference })
-  } catch {
-    /* 主题偏好同步失败不阻塞本地生效 */
-  }
 }
 
 const copyPreview = computed(() => {

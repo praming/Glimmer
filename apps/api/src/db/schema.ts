@@ -16,8 +16,23 @@ export const users = sqliteTable(
     passwordHash: text('password_hash').notNull(),
     role: text('role', { enum: ['admin', 'member'] }).notNull().default('member'),
     disabled: integer('disabled', { mode: 'boolean' }).notNull().default(false),
-    /** 头像地址：外部 URL 或本图库图片直链 */
+    /**
+     * 头像的**外部链接**（用户手填，如 Gravatar）。
+     *
+     * v1.0.5 起不再存本图库图片的直链快照 —— 那种存法在改域名 / 改路径前缀后会整体失效，
+     * 而 `rebuild-urls` 也从不重建它（头像就这样在所有设备上一起坏掉）。现在本图库头像
+     * 改由 `avatarUpdatedAt` 标记，地址在读取时由服务端拼出，永不失效。
+     *
+     * 与本地头像**互斥**：设置外链会删掉本地头像文件，上传本地头像会清空本列。
+     * 这样「最后一次操作生效」是可预期的，不需要在前端做优先级判断。
+     */
     avatarUrl: text('avatar_url'),
+    /**
+     * 本地头像的版本号（ISO 时间戳）；NULL 表示没有上传过本地头像。
+     *
+     * 同时用作直链的 `?v=` 参数：重新上传后它必然变化，否则浏览器会一直拿缓存里的旧图。
+     */
+    avatarUpdatedAt: text('avatar_updated_at'),
     /** 会话有效期（天）；NULL 表示跟随服务端默认值 SESSION_TTL_DAYS */
     sessionDays: integer('session_days'),
     createdAt: text('created_at').notNull().default(nowIso),

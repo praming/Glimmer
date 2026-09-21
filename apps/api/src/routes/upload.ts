@@ -23,6 +23,7 @@ import { paths } from '../env'
 import type { AppEnv } from '../lib/context'
 import { sha256Hex } from '../lib/crypto'
 import { badRequest } from '../lib/errors'
+import { isFile, readFormData, type UploadFile } from '../lib/form'
 import { ok, parseJson, parseWith } from '../lib/http'
 import { requireAuth } from '../lib/session'
 import { computeDedupKey, findDedupHit, lookupDedup } from '../services/dedup'
@@ -38,21 +39,8 @@ export const uploadRoutes = new Hono<AppEnv>()
 /* 辅助                                                                */
 /* ------------------------------------------------------------------ */
 
-/**
- * 从 `FormData` 派生「文件项」类型，而不是直接用全局 `File`。
- *
- * 本仓库 `lib: ["ES2023"]`、`types: ["node"]`，此时存在两套 `File`：
- * - `FormData` 的取值来自 undici（`undici-types/file.d.ts` 的 class File）
- * - 全局 `File` 是 `interface File extends import('buffer').File`
- * 二者结构相近但**标称不同**，会导致 `filter(isFile)` 的类型谓词不满足
- * `S extends FormDataEntryValue` 约束，从而退回非谓词重载、失去窄化
- * （表现为后续 `file.name` / `file.size` 全部报 TS2339）。
- * 直接派生即可保证与 `getAll()` 的返回元素严格同一。
- */
-type UploadFile = Exclude<ReturnType<FormData['getAll']>[number], string>
-
-const isFile = (value: unknown): value is UploadFile =>
-  typeof value !== 'string' && typeof File !== 'undefined' && value instanceof File
+/* `UploadFile` / `isFile` 已抽到 `lib/form.ts`（头像路由同样需要），
+ * 那边保留了「为什么必须从 FormData 派生而不是用全局 File」的完整说明。 */
 
 function normalizeMime(file: UploadFile): string {
   const declared = (file.type || '').toLowerCase()
@@ -177,12 +165,7 @@ uploadRoutes.post('/', requireAuth, async (c) => {
   const settings = getGlobalSettings()
   const maxBytes = settings.maxUploadSizeMb * 1024 * 1024
 
-  let form: FormData
-  try {
-    form = await c.req.formData()
-  } catch {
-    throw badRequest('无法解析上传数据，请确认使用 multipart/form-data 提交')
-  }
+  const form = await readFormData(c)
 
   const files = [...form.getAll('files'), ...form.getAll('file')].filter(isFile)
 

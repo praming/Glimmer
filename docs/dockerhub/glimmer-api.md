@@ -124,7 +124,7 @@ docker exec glimmer-api node apps/api/dist/cli/rebuild-urls.js --apply
 | 标签 | 说明 |
 | --- | --- |
 | `latest` | 最新发布，对应最近的 `v*` tag |
-| `1.0.0` … `1.0.4` | 固定版本；历史版本均保留，可随时回退（GitHub tag `v1.0.4` → 镜像 `1.0.4`） |
+| `1.0.0` … `1.0.5` | 固定版本；历史版本均保留，可随时回退（GitHub tag `v1.0.5` → 镜像 `1.0.5`） |
 
 - **平台：仅 `linux/amd64`。** 目前没有 arm64 清单，ARM 设备（Apple Silicon、部分 NAS）`docker pull` 会报 `no matching manifest` —— 这类机器请在本地用仓库里的 Dockerfile 自行构建。
 - 升级：`docker compose pull && docker compose up -d`。
